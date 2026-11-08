@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "app": {
+      "root": ".",
+      "framework": "vite"
+    },
+    "admin": {
+      "root": "apps/admin",
+      "framework": "vite"
+    },
+    "driver-web": {
+      "root": "apps/driver-web",
+      "framework": "vite"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/admin/(.*)",
+      "destination": {
+        "service": "admin"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "app"
+      }
+    }
+  ]
+}
