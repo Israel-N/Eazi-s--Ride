@@ -1,0 +1,7 @@
+# Supabase Edge Function gateway settings.
+# Authenticated app functions keep JWT verification enabled by default.
+[functions.payment-webhook]
+verify_jwt = false
+
+[functions.ride-push]
+verify_jwt = false
