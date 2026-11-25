@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import MapView, { Marker, Polyline } from 'react-native-maps';
@@ -12,33 +13,79 @@ const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', 
   auth: { storage: AsyncStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
 });
 const RIDE_TYPES = { economy: { label: 'Economy', seats: 4, multiplier: 1 }, comfort: { label: 'Comfort', seats: 4, multiplier: 1.35 }, xl: { label: 'XL', seats: 6, multiplier: 1.7 } };
-const money = (n) => `GH₵ ${Number(n || 0).toFixed(2)}`;
+const money = (n) => `GHS ${Number(n || 0).toFixed(2)}`;
 const haversine = (a,b) => { const rad=x=>x*Math.PI/180; const dLat=rad(b.lat-a.lat), dLng=rad(b.lng-a.lng); const x=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2; return 6371*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x)); };
-let lastPlaceSearchAt = 0;
 async function searchPlaces(query) {
-  const wait = Math.max(0, 1100 - (Date.now() - lastPlaceSearchAt));
-  if (wait) await new Promise(resolve => setTimeout(resolve, wait));
-  lastPlaceSearchAt = Date.now();
-  const q = /\bghana\b/i.test(query) ? query : `${query}, Ghana`;
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&countrycodes=gh&limit=6&q=${encodeURIComponent(q)}`;
-  const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
-  if (!res.ok) throw new Error('Location search is temporarily unavailable. Please try again.');
-  const rows = await res.json();
-  return rows.map(row => ({ lat: Number(row.lat), lng: Number(row.lon), label: row.display_name }));
+  const { data, error } = await supabase.functions.invoke('location-search', {
+    body: { query: query.trim() }
+  });
+
+  if (error) {
+    throw new Error('Location search is temporarily unavailable. Please try again.');
+  }
+
+  if (data?.error) {
+    throw new Error(data.error);
+  }
+
+  return Array.isArray(data?.suggestions) ? data.suggestions : [];
 }
 
 function Button({ title, onPress, disabled, secondary }) { return <Pressable disabled={disabled} onPress={onPress} style={[styles.button, secondary && styles.secondary, disabled && { opacity: .5 }]}><Text style={[styles.buttonText, secondary && styles.secondaryText]}>{title}</Text></Pressable>; }
 function Field({ label, ...props }) { const title = label || props.placeholder || 'Input'; return <View style={styles.fieldWrap}><Text style={styles.fieldLabel}>{title}</Text><TextInput accessibilityLabel={title} placeholderTextColor="#94A3B8" style={styles.input} {...props} /></View>; }
-export default function App() {
+function AppContent() {
   const [session,setSession]=useState(null), [profile,setProfile]=useState(null), [loading,setLoading]=useState(true);
   const [mode,setMode]=useState('login'), [email,setEmail]=useState(''), [password,setPassword]=useState(''), [fullName,setFullName]=useState('');
   const [authMethod,setAuthMethod]=useState('email'), [authStage,setAuthStage]=useState('details'), [phone,setPhone]=useState('+233'), [otp,setOtp]=useState(''), [showPassword,setShowPassword]=useState(false);
   const [avatarUrl,setAvatarUrl]=useState(null), [suggestions,setSuggestions]=useState([]), [suggestionTarget,setSuggestionTarget]=useState(null);
+  const [pickupSuggestions,setPickupSuggestions]=useState([]);
+  const [destinationSuggestions,setDestinationSuggestions]=useState([]);
+  const [pickupSearching,setPickupSearching]=useState(false);
+  const [destinationSearching,setDestinationSearching]=useState(false);
+  const [pickupSearchDone,setPickupSearchDone]=useState(false);
+  const [destinationSearchDone,setDestinationSearchDone]=useState(false);
   const [pickup,setPickup]=useState(''), [destination,setDestination]=useState(''), [pickupPoint,setPickupPoint]=useState(null), [destinationPoint,setDestinationPoint]=useState(null);
+  const [rideCategory,setRideCategory]=useState('recommended');
   const [rideType,setRideType]=useState('economy'), [payment,setPayment]=useState('cash'), [busy,setBusy]=useState(false), [error,setError]=useState('');
-  const [currentRide,setCurrentRide]=useState(null), [history,setHistory]=useState([]), [tab,setTab]=useState('book');
+  const [currentRide,setCurrentRide]=useState(null), [history,setHistory]=useState([]), [tab,setTab]=useState('book'), [accountPage,setAccountPage]=useState('main');
+  const [bookingStep,setBookingStep]=useState('home'), [stops,setStops]=useState([]);
+  const goToBookingStep = (step) => {
+    setBookingStep(step);
+    setError('');
+    setSuggestions([]);
+    setSuggestionTarget(null);
+  };
+
+  const addStop = () => {
+    setStops(previous => [
+      ...previous,
+      { id: `${Date.now()}-${previous.length}`, address: '', point: null }
+    ]);
+  };
+
+  const removeStop = (id) => {
+    setStops(previous => previous.filter(stop => stop.id !== id));
+  };
+
+  const updateStop = (id, changes) => {
+    setStops(previous =>
+      previous.map(stop => stop.id === id ? { ...stop, ...changes } : stop)
+    );
+  };
+
   const distance=useMemo(()=>pickupPoint&&destinationPoint?haversine(pickupPoint,destinationPoint):0, [pickupPoint,destinationPoint]);
-  const estimatedFare=useMemo(()=>{const km=Math.max(.1,distance); const mins=Math.max(3,Math.ceil(km/30*60)); return Math.max(5,Math.round((5+km*1.5+mins*.5)*RIDE_TYPES[rideType].multiplier*100)/100);},[distance,rideType]);
+  const estimatedMinutes = useMemo(
+    () => Math.max(3, Math.ceil(Math.max(0.1, distance) / 30 * 60)),
+    [distance]
+  );
+  const baseEstimatedFare = useMemo(
+    () => 5 + Math.max(0.1, distance) * 1.5 + estimatedMinutes * 0.5,
+    [distance, estimatedMinutes]
+  );
+  const estimatedFare = useMemo(
+    () => Math.max(5, Math.round(baseEstimatedFare * RIDE_TYPES[rideType].multiplier * 100) / 100),
+    [baseEstimatedFare, rideType]
+  );
 
   const loadProfile=useCallback(async (user)=>{
     const {data,error:profileError}=await supabase.from('profiles').select('id,full_name,email,phone,role,avatar_url').eq('id',user.id).single();
@@ -64,6 +111,89 @@ export default function App() {
     return()=>{supabase.removeChannel(ch);};
   },[session?.user?.id,refreshRides]);
 
+  // Independent pickup autocomplete.
+  useEffect(() => {
+    if (bookingStep !== 'locations' || suggestionTarget !== 'pickup') {
+      setPickupSearching(false);
+      return;
+    }
+
+    const query = pickup.trim();
+
+    if (pickupPoint || query.length < 2) {
+      setPickupSuggestions([]);
+      setPickupSearching(false);
+      setPickupSearchDone(false);
+      return;
+    }
+
+    let active = true;
+    setPickupSuggestions([]);
+    setPickupSearching(true);
+    setPickupSearchDone(false);
+
+    const timer = setTimeout(async () => {
+      try {
+        const rows = await searchPlaces(query);
+        if (!active) return;
+        setPickupSuggestions(rows);
+        setPickupSearchDone(true);
+      } catch {
+        if (!active) return;
+        setPickupSuggestions([]);
+        setPickupSearchDone(true);
+      } finally {
+        if (active) setPickupSearching(false);
+      }
+    }, 350);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [pickup, pickupPoint, suggestionTarget, bookingStep]);
+
+  // Independent destination autocomplete.
+  useEffect(() => {
+    if (bookingStep !== 'locations' || suggestionTarget !== 'destination') {
+      setDestinationSearching(false);
+      return;
+    }
+
+    const query = destination.trim();
+
+    if (destinationPoint || query.length < 2) {
+      setDestinationSuggestions([]);
+      setDestinationSearching(false);
+      setDestinationSearchDone(false);
+      return;
+    }
+
+    let active = true;
+    setDestinationSuggestions([]);
+    setDestinationSearching(true);
+    setDestinationSearchDone(false);
+
+    const timer = setTimeout(async () => {
+      try {
+        const rows = await searchPlaces(query);
+        if (!active) return;
+        setDestinationSuggestions(rows);
+        setDestinationSearchDone(true);
+      } catch {
+        if (!active) return;
+        setDestinationSuggestions([]);
+        setDestinationSearchDone(true);
+      } finally {
+        if (active) setDestinationSearching(false);
+      }
+    }, 350);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [destination, destinationPoint, suggestionTarget, bookingStep]);
   const authAction=async()=>{
     setBusy(true);setError('');
     try{
@@ -85,21 +215,141 @@ export default function App() {
     }catch(e){setError(e.message);}finally{setBusy(false);}
   };
 
-  const locate=async()=>{
-    setBusy(true);setError('');
-    try{const p=await Location.requestForegroundPermissionsAsync();if(p.status!=='granted')throw new Error('Allow location access or enter your pickup address manually.');const pos=await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.High});const point={lat:pos.coords.latitude,lng:pos.coords.longitude};setPickupPoint(point);try{const res=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${point.lat}&lon=${point.lng}`,{headers:{'Accept-Language':'en'}});const data=await res.json();setPickup(data.display_name||'My current location');}catch{setPickup('My current location');}}
-    catch(e){setError(e.message);}finally{setBusy(false);}
+  const locate = async () => {
+    setBusy(true);
+    setError('');
+
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+
+      if (permission.status !== 'granted') {
+        throw new Error('Allow location access to detect your pickup point.');
+      }
+
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High
+      });
+
+      const point = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude
+      };
+
+      setPickupPoint(point);
+
+      let locationName = '';
+
+      // First try Expo's native reverse geocoding.
+      try {
+        const results = await Location.reverseGeocodeAsync({
+          latitude: point.lat,
+          longitude: point.lng
+        });
+
+        if (results?.length) {
+          const address = results[0];
+
+          const parts = [
+            address.name,
+            address.street,
+            address.district,
+            address.subregion,
+            address.city,
+            address.region
+          ].filter(Boolean);
+
+          locationName = [...new Set(parts)].join(', ');
+        }
+      } catch (geocodeError) {
+        console.warn('Native reverse geocoding failed:', geocodeError);
+      }
+
+      // Use OpenStreetMap as a fallback if native geocoding has no result.
+      if (!locationName) {
+        try {
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${point.lat}&lon=${point.lng}`,
+            { headers: { 'Accept-Language': 'en' } }
+          );
+
+          if (response.ok) {
+            const result = await response.json();
+            locationName = result.display_name || '';
+          }
+        } catch (geocodeError) {
+          console.warn('OpenStreetMap reverse geocoding failed:', geocodeError);
+        }
+      }
+
+      if (!locationName) {
+        setPickup('');
+        throw new Error(
+          'Your GPS position was detected, but its address could not be identified. Please enter your pickup location manually.'
+        );
+      }
+
+      setPickup(locationName);
+      setSuggestions([]);
+      setSuggestionTarget(null);
+
+    } catch (e) {
+      setError(e.message || 'Unable to detect your pickup location.');
+    } finally {
+      setBusy(false);
+    }
   };
+
   const findSuggestions=async(target)=>{
-    const query=target==='pickup'?pickup:destination;
-    if(!query.trim()){setError(`Enter a ${target} location first.`);return;}
-    setBusy(true);setError('');setSuggestions([]);setSuggestionTarget(target);
-    try{const rows=await searchPlaces(query.trim());if(!rows.length)throw new Error('No matching Ghana locations found. Try a town, community, landmark or business name.');setSuggestions(rows);}
-    catch(e){setError(e.message);setSuggestionTarget(null);}finally{setBusy(false);}
+    let query='';
+
+    if(target==='pickup'){
+      query=pickup;
+    }else if(target==='destination'){
+      query=destination;
+    }else if(target.startsWith('stop:')){
+      const stopId=target.slice(5);
+      query=stops.find(stop=>stop.id===stopId)?.address||'';
+    }
+
+    if(!query.trim()){
+      setError('Enter a location first.');
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setSuggestions([]);
+    setSuggestionTarget(target);
+
+    try{
+      const rows=await searchPlaces(query.trim());
+      if(!rows.length)throw new Error('No matching Ghana locations found. Try a town, community, landmark or business name.');
+      setSuggestions(rows);
+    }catch(e){
+      setError(e.message);
+      setSuggestionTarget(null);
+    }finally{
+      setBusy(false);
+    }
   };
-  const chooseSuggestion=(place)=>{
-    if(suggestionTarget==='pickup'){setPickup(place.label);setPickupPoint(place);}else{setDestination(place.label);setDestinationPoint(place);}
-    setSuggestions([]);setSuggestionTarget(null);setError('');
+
+  const chooseSuggestion=(place,target=suggestionTarget)=>{
+    if(target==='pickup'){
+      setPickup(place.label);
+      setPickupPoint(place);
+    }else if(target==='destination'){
+      setDestination(place.label);
+      setDestinationPoint(place);
+    }else if(target?.startsWith('stop:')){
+      const stopId=target.slice(5);
+      updateStop(stopId,{address:place.label,point:place});
+    }
+
+    setSuggestions([]);
+    setPickupSuggestions([]);
+    setDestinationSuggestions([]);
+    setSuggestionTarget(null);
+    setError('');
   };
   const uploadAvatar=async()=>{
     setError('');
@@ -132,45 +382,1438 @@ export default function App() {
   const cancel=async(ride)=>{Alert.alert('Cancel ride','Are you sure you want to cancel this ride?',[{text:'Keep ride',style:'cancel'},{text:'Cancel ride',style:'destructive',onPress:async()=>{try{const{error:e}=await supabase.rpc('cancel_my_ride',{p_ride_id:ride.id,p_reason:'Cancelled by rider'});if(e)throw e;await refreshRides();}catch(err){setError(err.message);}}}]);};
   const signOut=async()=>{await supabase.auth.signOut();setProfile(null);};
 
-  if(loading)return <SafeAreaView style={styles.center}><ActivityIndicator size="large" color="#2563EB"/><Text style={styles.muted}>Loading Eazi's Ride…</Text></SafeAreaView>;
-  if(!session)return <SafeAreaView style={styles.safe}><KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':'height'} keyboardVerticalOffset={Platform.OS==='ios'?12:0} style={{flex:1}}><ScrollView contentContainerStyle={styles.auth} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets><Image source={require('./assets/brand-logo.png')} style={styles.brandLogo} resizeMode="contain"/><Text style={styles.subtitle}>Your ride, made easy.</Text><Text style={styles.heading}>{authStage==='otp'?'Verify your account':mode==='login'?'Welcome back':'Create your passenger account'}</Text>
-    {authStage==='otp'?<><Text style={styles.muted}>Enter the 6-digit code sent to {authMethod==='email'?email:phone}.</Text><Field label="6-digit verification code" placeholder="000000" keyboardType="number-pad" autoComplete="one-time-code" maxLength={6} value={otp} onChangeText={setOtp}/><Button title={busy?'Verifying…':'Verify code'} onPress={authAction} disabled={busy||otp.length!==6}/><Button title="Back" secondary onPress={()=>{setAuthStage('details');setOtp('');}}/></>:<>
+  const mapRegion = useMemo(() => {
+    const points = [pickupPoint, destinationPoint].filter(Boolean);
+
+    if (points.length === 0) {
+      return {
+        latitude: 5.6037,
+        longitude: -0.1870,
+        latitudeDelta: 0.035,
+        longitudeDelta: 0.035,
+      };
+    }
+
+    if (points.length === 1) {
+      return {
+        latitude: Number(points[0].lat),
+        longitude: Number(points[0].lng),
+        latitudeDelta: 0.025,
+        longitudeDelta: 0.025,
+      };
+    }
+
+    const latitudes = points.map(point => Number(point.lat));
+    const longitudes = points.map(point => Number(point.lng));
+
+    return {
+      latitude: (Math.min(...latitudes) + Math.max(...latitudes)) / 2,
+      longitude: (Math.min(...longitudes) + Math.max(...longitudes)) / 2,
+      latitudeDelta: Math.max(0.015, (Math.max(...latitudes) - Math.min(...latitudes)) * 1.8),
+      longitudeDelta: Math.max(0.015, (Math.max(...longitudes) - Math.min(...longitudes)) * 1.8),
+    };
+  }, [pickupPoint, destinationPoint]);
+
+  if(loading)return <SafeAreaView style={styles.center}><ActivityIndicator size="large" color="#2563EB"/><Text style={styles.muted}>Loading Eazi's Ride...</Text></SafeAreaView>;
+  if(!session)return <SafeAreaView style={styles.safe} edges={['top']}><KeyboardAvoidingView behavior={Platform.OS==='ios'?'padding':'height'} keyboardVerticalOffset={Platform.OS==='ios'?12:0} style={{flex:1}}><ScrollView contentContainerStyle={styles.auth} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets><Image source={require('./assets/brand-logo.png')} style={styles.brandLogo} resizeMode="contain"/><Text style={styles.subtitle}>Your ride, made easy.</Text><Text style={styles.heading}>{authStage==='otp'?'Verify your account':mode==='login'?'Welcome back':'Create your passenger account'}</Text>
+    {authStage==='otp'?<><Text style={styles.muted}>Enter the 6-digit code sent to {authMethod==='email'?email:phone}.</Text><Field label="6-digit verification code" placeholder="000000" keyboardType="number-pad" autoComplete="one-time-code" maxLength={6} value={otp} onChangeText={setOtp}/><Button title={busy?'Verifying...':'Verify code'} onPress={authAction} disabled={busy||otp.length!==6}/><Button title="Back" secondary onPress={()=>{setAuthStage('details');setOtp('');}}/></>:<>
     <View style={styles.authSwitch}><Pressable onPress={()=>{setAuthMethod('email');setError('');}} style={[styles.authChoice,authMethod==='email'&&styles.authChoiceActive]}><Text>Email</Text></Pressable><Pressable onPress={()=>{setAuthMethod('phone');setError('');}} style={[styles.authChoice,authMethod==='phone'&&styles.authChoiceActive]}><Text>Phone</Text></Pressable></View>
     {mode==='signup'&&<Field label="Full name" placeholder="Your full name" autoCapitalize="words" autoComplete="name" value={fullName} onChangeText={setFullName}/>}
     {authMethod==='email'?<><Field label="Email address" placeholder="name@example.com" autoCapitalize="none" autoCorrect={false} keyboardType="email-address" autoComplete="email" value={email} onChangeText={setEmail}/><View style={styles.passwordRow}><View style={{flex:1}}><Field label="Password" placeholder="At least 8 characters" autoCapitalize="none" autoComplete={mode==='login'?'current-password':'new-password'} secureTextEntry={!showPassword} value={password} onChangeText={setPassword}/></View><Pressable accessibilityRole="button" accessibilityLabel={showPassword?'Hide password':'Show password'} style={styles.eyeButton} onPress={()=>setShowPassword(v=>!v)}><Text style={styles.link}>{showPassword?'Hide':'Show'}</Text></Pressable></View></>:<Field label="Phone number" placeholder="+233XXXXXXXXX" keyboardType="phone-pad" autoComplete="tel" value={phone} onChangeText={setPhone}/>}
-    <Button title={busy?'Please wait…':mode==='login'?(authMethod==='email'?'Sign in':'Send SMS code'):(authMethod==='email'?'Create account and send code':'Send SMS code')} onPress={authAction} disabled={busy||(authMethod==='email'&&(!email.trim()||password.length<(mode==='signup'?8:1)))||(authMethod==='phone'&&!phone.trim())||(mode==='signup'&&!fullName.trim())}/><Pressable onPress={()=>{setMode(mode==='login'?'signup':'login');setAuthStage('details');setError('');}}><Text style={styles.link}>{mode==='login'?"New to Eazi's Ride? Create an account":"Already registered? Sign in"}</Text></Pressable></>}
+    <Button title={busy?'Please wait...':mode==='login'?(authMethod==='email'?'Sign in':'Send SMS code'):(authMethod==='email'?'Create account and send code':'Send SMS code')} onPress={authAction} disabled={busy||(authMethod==='email'&&(!email.trim()||password.length<(mode==='signup'?8:1)))||(authMethod==='phone'&&!phone.trim())||(mode==='signup'&&!fullName.trim())}/><Pressable onPress={()=>{setMode(mode==='login'?'signup':'login');setAuthStage('details');setError('');}}><Text style={styles.link}>{mode==='login'?"New to Eazi's Ride? Create an account":"Already registered? Sign in"}</Text></Pressable></>}
     {error?<Text style={styles.error}>{error}</Text>:null}<Text style={styles.small}>Passenger accounts only. Driver applications are handled separately.</Text></ScrollView></KeyboardAvoidingView></SafeAreaView>;
 
-  return <SafeAreaView style={styles.safe}><View style={styles.header}><View style={styles.profileHeader}>{avatarUrl?<Image source={{uri:avatarUrl}} style={styles.avatar}/>:<View style={styles.avatarPlaceholder}><Text style={styles.avatarInitial}>{(profile?.full_name||'R').slice(0,1).toUpperCase()}</Text></View>}<View><Text style={styles.brand}>EAZI'S RIDE</Text><Text style={styles.muted}>Hello, {profile?.full_name||'there'}</Text><Pressable onPress={uploadAvatar}><Text style={styles.link}>Change profile picture</Text></Pressable></View></View><Pressable onPress={signOut}><Text style={styles.link}>Sign out</Text></Pressable></View>
-    <View style={styles.tabs}><Pressable onPress={()=>setTab('book')} style={[styles.tab,tab==='book'&&styles.tabActive]}><Text style={tab==='book'?styles.tabTextActive:styles.tabText}>Book a ride</Text></Pressable><Pressable onPress={()=>setTab('activity')} style={[styles.tab,tab==='activity'&&styles.tabActive]}><Text style={tab==='activity'?styles.tabTextActive:styles.tabText}>My rides</Text></Pressable></View>
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      {error?<Text style={styles.error}>{error}</Text>:null}
-      {tab==='book'?<>
-        <Text style={styles.heading}>Where are you going?</Text><Field label="Pickup location" placeholder="Enter town, community, landmark or business" value={pickup} onChangeText={v=>{setPickup(v);setPickupPoint(null);setSuggestions([]);setSuggestionTarget(null);}}/><Button title={busy?'Searching…':'Search pickup suggestions'} secondary onPress={()=>findSuggestions('pickup')} disabled={busy||!pickup.trim()}/><Button title={busy?'Getting location…':'Use my current location'} secondary onPress={locate} disabled={busy}/><Field label="Destination" placeholder="Enter town, community, landmark or business" value={destination} onChangeText={v=>{setDestination(v);setDestinationPoint(null);setSuggestions([]);setSuggestionTarget(null);}}/><Button title={busy?'Searching…':'Search destination suggestions'} secondary onPress={()=>findSuggestions('destination')} disabled={busy||!destination.trim()}/>{suggestions.length>0&&<View style={styles.suggestionBox}><Text style={styles.section}>Choose the correct {suggestionTarget}:</Text>{suggestions.map((place,index)=><Pressable key={`${place.lat}-${place.lng}-${index}`} style={styles.suggestionItem} onPress={()=>chooseSuggestion(place)}><Text style={styles.suggestionText}>{place.label}</Text></Pressable>)}</View>}
-        {(pickupPoint || destinationPoint) ? (
-          <MapView
-            style={styles.map}
-            region={{
-              latitude: ((pickupPoint?.lat ?? destinationPoint?.lat ?? 5.6037) + (destinationPoint?.lat ?? pickupPoint?.lat ?? 5.6037)) / 2,
-              longitude: ((pickupPoint?.lng ?? destinationPoint?.lng ?? -0.1870) + (destinationPoint?.lng ?? pickupPoint?.lng ?? -0.1870)) / 2,
-              latitudeDelta: 0.06,
-              longitudeDelta: 0.06,
-            }}
-          >
-            {pickupPoint ? <Marker coordinate={{ latitude: pickupPoint.lat, longitude: pickupPoint.lng }} title="Pickup" pinColor="green" /> : null}
-            {destinationPoint ? <Marker coordinate={{ latitude: destinationPoint.lat, longitude: destinationPoint.lng }} title="Destination" pinColor="red" /> : null}
-            {pickupPoint && destinationPoint ? <Polyline coordinates={[{ latitude: pickupPoint.lat, longitude: pickupPoint.lng }, { latitude: destinationPoint.lat, longitude: destinationPoint.lng }]} strokeColor="#2563EB" strokeWidth={4} /> : null}
-          </MapView>
+
+
+  const formatMoney = (amount) =>
+    `GHS ${Number(amount || 0).toFixed(2)}`;
+
+  return (
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <View style={{ flex: 1 }}>
+        {error ? (
+          <View style={{ marginHorizontal: 20, marginBottom: 12, padding: 12, backgroundColor: "#FFF0F0", borderRadius: 12 }}>
+            <Text style={{ color: "#B42318", fontSize: 12 }}>{error}</Text>
+          </View>
         ) : null}
-        <Text style={styles.section}>Choose your ride</Text><View style={styles.rideTypes}>{Object.entries(RIDE_TYPES).map(([key,v])=><Pressable key={key} onPress={()=>setRideType(key)} style={[styles.rideCard,rideType===key&&styles.rideSelected]}><Text style={styles.rideName}>{v.label}</Text><Text style={styles.muted}>{v.seats} seats</Text></Pressable>)}</View>
-        <Text style={styles.section}>Payment method</Text><View style={styles.rideTypes}><Pressable onPress={()=>setPayment('cash')} style={[styles.rideCard,payment==='cash'&&styles.rideSelected]}><Text style={styles.rideName}>Cash</Text></Pressable><Pressable onPress={()=>setPayment('mobile_money')} style={[styles.rideCard,payment==='mobile_money'&&styles.rideSelected]}><Text style={styles.rideName}>Mobile Money</Text></Pressable></View>
-        {distance>0&&<View style={styles.estimate}><Text style={styles.muted}>Straight-line distance estimate: {distance.toFixed(1)} km</Text><Text style={styles.fare}>{money(estimatedFare)}</Text><Text style={styles.small}>Final fare is calculated by the Supabase request_ride function. Route distance and price may differ.</Text></View>}
-        <Button title={busy?'Sending request…':'Request ride'} onPress={bookRide} disabled={busy||!pickupPoint||!destinationPoint}/>
-      </>:<>
-        <Text style={styles.heading}>Ride activity</Text>{history.length===0?<Text style={styles.muted}>Your rides will appear here.</Text>:history.map(ride=><View key={ride.id} style={styles.rideHistory}><View style={styles.row}><Text style={styles.rideName}>{String(ride.status).replace('_',' ').toUpperCase()}</Text><Text style={styles.fareSmall}>{money(ride.fare)}</Text></View><Text style={styles.address}>From: {ride.pickup_address}</Text><Text style={styles.address}>To: {ride.destination_address}</Text><Text style={styles.small}>{new Date(ride.created_at).toLocaleString()}</Text>{['requested','accepted','arriving','arrived'].includes(ride.status)&&<Button title="Cancel ride" secondary onPress={()=>cancel(ride)}/>}</View>)}
-      </>}
-    </ScrollView>
-    <View style={styles.footer}><Text style={styles.small}>Eazi's Ride · Akosombo and beyond</Text></View>
-  </SafeAreaView>;
+
+
+        {tab === "book" ? (
+          bookingStep === "home" ? (
+            <ScrollView
+              style={{ flex: 1, backgroundColor: "#F8FAFC" }}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 25 }}
+            >
+              <View style={{ height: 470, backgroundColor: "#DBEAFE" }}>
+                <MapView
+                  style={{ flex: 1 }}
+                  region={mapRegion}
+                  showsUserLocation
+                  showsMyLocationButton={false}
+                />
+
+                <View style={{
+                  position: "absolute",
+                  top: 15,
+                  left: 18,
+                  backgroundColor: "#FFFFFF",
+                  paddingHorizontal: 15,
+                  paddingVertical: 10,
+                  borderRadius: 20,
+                  elevation: 3
+                }}>
+                  <Text style={{ color: "#1D4ED8", fontSize: 13, fontWeight: "900" }}>
+                    EAZI'S RIDE
+                  </Text>
+                </View>
+
+                <Pressable
+                  onPress={locate}
+                  style={{
+                    position: "absolute",
+                    right: 18,
+                    bottom: 18,
+                    backgroundColor: "#FFFFFF",
+                    paddingHorizontal: 15,
+                    paddingVertical: 12,
+                    borderRadius: 25,
+                    elevation: 4
+                  }}
+                >
+                  <Text style={{ color: "#1D4ED8", fontWeight: "800", fontSize: 12 }}>
+                    ◎ My location
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={{
+                marginHorizontal: 16,
+                marginTop: 0,
+                backgroundColor: "#FFFFFF",
+                borderRadius: 22,
+                padding: 16,
+                borderWidth: 1,
+                borderColor: "#DBEAFE",
+                elevation: 5
+              }}>
+                <Text style={{
+                  fontSize: 23,
+                  fontWeight: "900",
+                  color: "#0F172A"
+                }}>
+                  Where are you going?
+                </Text>
+
+                <Text style={{
+                  fontSize: 13,
+                  color: "#64748B",
+                  marginTop: 6,
+                  marginBottom: 12
+                }}>
+                  Your next journey starts here.
+                </Text>
+
+                <Pressable
+                  onPress={() => goToBookingStep("locations")}
+                  style={{
+                    backgroundColor: "#EFF6FF",
+                    borderWidth: 1,
+                    borderColor: "#BFDBFE",
+                    borderRadius: 15,
+                    padding: 14,
+                    flexDirection: "row",
+                    alignItems: "center"
+                  }}
+                >
+                  <View style={{
+                    width: 35,
+                    height: 35,
+                    borderRadius: 18,
+                    backgroundColor: "#DBEAFE",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    marginRight: 12
+                  }}>
+                    <Text style={{ color: "#2563EB", fontSize: 19, fontWeight: "900" }}>
+                      →
+                    </Text>
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <Text style={{
+                      color: "#0F172A",
+                      fontSize: 15,
+                      fontWeight: "900"
+                    }}>
+                      Where to?
+                    </Text>
+                    <Text style={{
+                      color: "#64748B",
+                      fontSize: 11,
+                      marginTop: 3
+                    }}>
+                      Enter your destination
+                    </Text>
+                  </View>
+
+                  <Text style={{ color: "#2563EB", fontSize: 22, fontWeight: "900" }}>
+                    ›
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => setTab("activity")}
+                  style={{
+                    marginTop: 16,
+                    padding: 14,
+                    borderRadius: 13,
+                    backgroundColor: "#F8FAFC",
+                    borderWidth: 1,
+                    borderColor: "#E2E8F0"
+                  }}
+                >
+                  <Text style={{ color: "#0F172A", fontWeight: "800", fontSize: 13 }}>
+                    Recent activity
+                  </Text>
+                  <Text style={{ color: "#64748B", fontSize: 11, marginTop: 4 }}>
+                    View your previous and ongoing rides.
+                  </Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          ) : bookingStep === "locations" ? (
+            <ScrollView
+              style={{ flex: 1, backgroundColor: "#F8FAFC" }}
+              contentContainerStyle={{ padding: 20, paddingBottom: 35 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Pressable onPress={() => goToBookingStep("home")}>
+                <Text style={{ color: "#2563EB", fontWeight: "800", fontSize: 14 }}>
+                  ‹ Back
+                </Text>
+              </Pressable>
+
+              <Text style={{
+                color: "#0F172A",
+                fontSize: 27,
+                fontWeight: "900",
+                marginTop: 22
+              }}>
+                Your journey
+              </Text>
+
+              <Text style={{
+                color: "#64748B",
+                fontSize: 13,
+                marginTop: 6,
+                marginBottom: 22
+              }}>
+                Choose your pickup, destination and any stops.
+              </Text>
+
+              <View style={{
+                backgroundColor: "#FFFFFF",
+                borderRadius: 18,
+                padding: 17,
+                borderWidth: 1,
+                borderColor: "#E2E8F0"
+              }}>
+                <Text style={{
+                  color: "#2563EB",
+                  fontSize: 11,
+                  fontWeight: "900",
+                  marginBottom: 8
+                }}>
+                  PICKUP LOCATION
+                </Text>
+
+                <View style={{
+  flexDirection: "row",
+  alignItems: "center",
+  borderBottomWidth: 1,
+  borderBottomColor: "#E2E8F0"
+}}>
+  <TextInput
+    value={pickup}
+    onChangeText={(value) => {
+      setPickup(value);
+      setPickupPoint(null);
+      setSuggestions([]);
+      setSuggestionTarget("pickup");
+      setError("");
+    }}
+    placeholder="Enter pickup location"
+    placeholderTextColor="#94A3B8"
+    style={{
+      flex: 1,
+      color: "#0F172A",
+      fontSize: 15,
+      paddingVertical: 12
+    }}
+    onSubmitEditing={() => findSuggestions("pickup")}
+  />
+
+  <Pressable
+    onPress={locate}
+    disabled={busy}
+    accessibilityRole="button"
+    accessibilityLabel="Detect my pickup location"
+    style={{ paddingHorizontal: 13, paddingVertical: 10 }}
+  >
+    {busy ? (
+      <ActivityIndicator size="small" color="#2563EB" />
+    ) : (
+      <Text style={{ color: "#2563EB", fontSize: 25, fontWeight: "700" }}>
+        ⌖
+      </Text>
+    )}
+  </Pressable>
+</View>
+
+                {suggestionTarget === "pickup" && (pickupSearching || pickupSuggestions.length > 0 || pickupSearchDone) && (
+                  <View style={{ marginTop: 10, backgroundColor: "#FFFFFF", borderRadius: 14, borderWidth: 1, borderColor: "#DBEAFE", overflow: "hidden" }}>
+                    {pickupSearching ? (
+                      <View style={{ padding: 15, flexDirection: "row", alignItems: "center" }}>
+                        <ActivityIndicator size="small" color="#2563EB" />
+                        <Text style={{ marginLeft: 10, color: "#64748B", fontSize: 13 }}>Searching pickup locations...</Text>
+                      </View>
+                    ) : pickupSuggestions.length > 0 ? (
+                      pickupSuggestions.map((place, index) => (
+                        <Pressable
+                          key={place.placeId || place.place_id || place.osm_id || index}
+                          onPress={() => chooseSuggestion(place, "pickup")}
+                          style={{ padding: 13, borderBottomWidth: index === pickupSuggestions.length - 1 ? 0 : 1, borderBottomColor: "#F1F5F9", flexDirection: "row", alignItems: "center" }}
+                        >
+                          <Text style={{ color: "#2563EB", fontSize: 19, marginRight: 11 }}>⌖</Text>
+                          <Text numberOfLines={2} style={{ flex: 1, color: "#0F172A", fontSize: 13, fontWeight: "600" }}>
+                            {place.label || place.display_name || place.name || "Location"}
+                          </Text>
+                        </Pressable>
+                      ))
+                    ) : (
+                      <Text style={{ padding: 14, color: "#64748B", fontSize: 13 }}>No matching pickup locations found. Try a nearby landmark or community.</Text>
+                    )}
+                  </View>
+                )}
+
+                <View style={{
+                  height: 1,
+                  backgroundColor: "#E2E8F0",
+                  marginVertical: 10
+                }} />
+
+                {stops.map((stop, index) => (
+                  <View key={stop.id} style={{ marginBottom: 12 }}>
+                    <Text style={{
+                      color: "#64748B",
+                      fontSize: 11,
+                      fontWeight: "900"
+                    }}>
+                      STOP {index + 1}
+                    </Text>
+
+                    <View style={{
+                      flexDirection: "row",
+                      alignItems: "center"
+                    }}>
+                      <TextInput
+                        value={stop.address}
+                        onChangeText={(value) => updateStop(stop.id, {
+                          address: value,
+                          point: null
+                        })}
+                        placeholder="Enter stop location"
+                        placeholderTextColor="#94A3B8"
+                        style={{
+                          flex: 1,
+                          color: "#0F172A",
+                          fontSize: 14,
+                          paddingVertical: 10,
+                          borderBottomWidth: 1,
+                          borderBottomColor: "#E2E8F0"
+                        }}
+                        onSubmitEditing={() => findSuggestions(`stop:${stop.id}`)}
+                      />
+
+                      <Pressable
+                        onPress={() => findSuggestions(`stop:${stop.id}`)}
+                        style={{ padding: 10 }}
+                      >
+                        <Text style={{ color: "#2563EB", fontWeight: "800" }}>
+                          Search
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => removeStop(stop.id)}
+                        style={{ padding: 8 }}
+                      >
+                        <Text style={{ color: "#DC2626", fontWeight: "900" }}>
+                          ×
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+
+                <Text style={{
+                  color: "#0F172A",
+                  fontSize: 11,
+                  fontWeight: "900",
+                  marginTop: 8
+                }}>
+                  FINAL DESTINATION
+                </Text>
+
+                <View style={{
+                  flexDirection: "row",
+                  alignItems: "center"
+                }}>
+                  <TextInput
+                    value={destination}
+                    onChangeText={(value) => {
+                      setDestination(value);
+                      setDestinationPoint(null);
+                      setSuggestions([]);
+                      setSuggestionTarget("destination");
+                      setError("");
+                    }}
+                    placeholder="Where are you going?"
+                    placeholderTextColor="#94A3B8"
+                    style={{
+                      flex: 1,
+                      color: "#0F172A",
+                      fontSize: 15,
+                      paddingVertical: 11
+                    }}
+                    onSubmitEditing={() => findSuggestions("destination")}
+                  />
+
+
+                </View>
+
+                {suggestionTarget === "destination" && (destinationSearching || destinationSuggestions.length > 0 || destinationSearchDone) && (
+                  <View style={{ marginTop: 10, backgroundColor: "#FFFFFF", borderRadius: 14, borderWidth: 1, borderColor: "#DBEAFE", overflow: "hidden" }}>
+                    {destinationSearching ? (
+                      <View style={{ padding: 15, flexDirection: "row", alignItems: "center" }}>
+                        <ActivityIndicator size="small" color="#2563EB" />
+                        <Text style={{ marginLeft: 10, color: "#64748B", fontSize: 13 }}>Searching destinations...</Text>
+                      </View>
+                    ) : destinationSuggestions.length > 0 ? (
+                      destinationSuggestions.map((place, index) => (
+                        <Pressable
+                          key={place.placeId || place.place_id || place.osm_id || index}
+                          onPress={() => chooseSuggestion(place, "destination")}
+                          style={{ padding: 13, borderBottomWidth: index === destinationSuggestions.length - 1 ? 0 : 1, borderBottomColor: "#F1F5F9", flexDirection: "row", alignItems: "center" }}
+                        >
+                          <Text style={{ color: "#2563EB", fontSize: 19, marginRight: 11 }}>⌖</Text>
+                          <Text numberOfLines={2} style={{ flex: 1, color: "#0F172A", fontSize: 13, fontWeight: "600" }}>
+                            {place.label || place.display_name || place.name || "Location"}
+                          </Text>
+                        </Pressable>
+                      ))
+                    ) : (
+                      <Text style={{ padding: 14, color: "#64748B", fontSize: 13 }}>No matching destinations found. Try a nearby landmark or community.</Text>
+                    )}
+                  </View>
+                )}
+
+                <Pressable
+                  onPress={addStop}
+                  style={{
+                    marginTop: 15,
+                    padding: 13,
+                    borderRadius: 12,
+                    backgroundColor: "#EFF6FF",
+                    alignItems: "center"
+                  }}
+                >
+                  <Text style={{ color: "#1D4ED8", fontWeight: "900" }}>
+                    + Add a stop
+                  </Text>
+                </Pressable>
+              </View>
+
+              {suggestionTarget?.startsWith('stop:') && suggestions?.length > 0 && (
+                <View style={{
+                  marginTop: 12,
+                  backgroundColor: "#FFFFFF",
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  borderWidth: 1,
+                  borderColor: "#DBEAFE",
+                  shadowColor: "#0F172A",
+                  shadowOffset: { width: 0, height: 3 },
+                  shadowOpacity: 0.06,
+                  shadowRadius: 8,
+                  elevation: 2
+                }}>
+                  {suggestions.map((place, index) => (
+                    <Pressable
+                      key={place.placeId || place.place_id || place.osm_id || index}
+                      onPress={() => chooseSuggestion(place)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Select ${place.label || "location"}`}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        paddingHorizontal: 14,
+                        paddingVertical: 13,
+                        borderBottomWidth: index === suggestions.length - 1 ? 0 : 1,
+                        borderBottomColor: "#F1F5F9"
+                      }}
+                    >
+                      <View style={{
+                        width: 38,
+                        height: 38,
+                        borderRadius: 19,
+                        backgroundColor: "#EFF6FF",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginRight: 12
+                      }}>
+                        <Text style={{ color: "#2563EB", fontSize: 19 }}>
+                          ⌖
+                        </Text>
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          numberOfLines={2}
+                          style={{
+                            color: "#0F172A",
+                            fontSize: 14,
+                            fontWeight: "700"
+                          }}
+                        >
+                          {place.label || place.display_name || place.name || "Location"}
+                        </Text>
+
+                        {!!place.secondaryLabel && (
+                          <Text
+                            numberOfLines={1}
+                            style={{
+                              color: "#64748B",
+                              fontSize: 12,
+                              marginTop: 4
+                            }}
+                          >
+                            {place.secondaryLabel}
+                          </Text>
+                        )}
+                      </View>
+
+                      <Text style={{
+                        color: "#94A3B8",
+                        fontSize: 19,
+                        marginLeft: 8
+                      }}>
+                        ›
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+
+              {error ? (
+                <Text style={{
+                  color: "#DC2626",
+                  fontSize: 13,
+                  marginTop: 12
+                }}>
+                  {error}
+                </Text>
+              ) : null}
+
+              <Pressable
+                onPress={() => {
+                  if (!pickup.trim() || !pickupPoint) {
+                    setError("Search for and select a valid pickup location.");
+                    return;
+                  }
+
+                  if (stops.some(stop => !stop.address.trim() || !stop.point)) {
+                    setError("Search for and select a valid location for every stop.");
+                    return;
+                  }
+
+                  if (!destination.trim() || !destinationPoint) {
+                    setError("Search for and select a valid destination.");
+                    return;
+                  }
+
+                  setError("");
+                  goToBookingStep("rides");
+                }}
+                style={{
+                  marginTop: 22,
+                  backgroundColor: "#2563EB",
+                  padding: 17,
+                  borderRadius: 14,
+                  alignItems: "center"
+                }}
+              >
+                <Text style={{
+                  color: "#FFFFFF",
+                  fontSize: 15,
+                  fontWeight: "900"
+                }}>
+                  Continue
+                </Text>
+              </Pressable>
+            </ScrollView>
+          ) : bookingStep === "rides" ? (
+  <ScrollView
+    style={{ flex: 1, backgroundColor: "#F8FAFC" }}
+    showsVerticalScrollIndicator={false}
+    contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+  >
+    <Pressable onPress={() => goToBookingStep("locations")}>
+      <Text style={{ color: "#2563EB", fontWeight: "800" }}>
+        ← Back to locations
+      </Text>
+    </Pressable>
+
+    <Text style={{ fontSize: 27, fontWeight: "900", color: "#0F172A", marginTop: 24 }}>
+      Choose your ride
+    </Text>
+
+    <Text style={{ color: "#64748B", marginTop: 6, marginBottom: 20 }}>
+      Select the vehicle that suits your journey.
+    </Text>
+
+    <View style={{ flexDirection: "row", gap: 7, marginBottom: 16 }}>
+      {[
+        { id: "recommended", label: "Recommended" },
+        { id: "faster", label: "Faster" },
+        { id: "cheaper", label: "Cheaper" }
+      ].map(category => (
+        <Pressable
+          key={category.id}
+          onPress={() => {
+            setRideCategory(category.id);
+            if (category.id === "recommended") setRideType("comfort");
+            if (category.id === "cheaper") setRideType("economy");
+          }}
+          style={{
+            flex: 1,
+            paddingVertical: 12,
+            borderRadius: 11,
+            alignItems: "center",
+            backgroundColor: rideCategory === category.id ? "#2563EB" : "#FFFFFF",
+            borderWidth: 1,
+            borderColor: rideCategory === category.id ? "#2563EB" : "#E2E8F0"
+          }}
+        >
+          <Text style={{
+            fontSize: 10,
+            fontWeight: "900",
+            color: rideCategory === category.id ? "#FFFFFF" : "#475569"
+          }}>
+            {category.label}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+
+    {rideCategory === "faster" && (
+      <View style={{ backgroundColor: "#EFF6FF", padding: 13, borderRadius: 12, marginBottom: 14 }}>
+        <Text style={{ color: "#1D4ED8", fontSize: 12, lineHeight: 19 }}>
+          Live driver arrival estimates are not connected yet. Verified pickup times will require live driver availability.
+        </Text>
+      </View>
+    )}
+
+    {[
+      { id: "economy", name: "Economy", seats: "4 seats", description: "Affordable everyday journeys" },
+      { id: "comfort", name: "Comfort", seats: "4 seats", description: "Extra comfort for your journey" },
+      { id: "xl", name: "XL", seats: "6 seats", description: "More passenger and luggage space" }
+    ].map(item => {
+      const selected = rideType === item.id;
+      const baseFare = Number(estimatedFare || 0) / (RIDE_TYPES[rideType]?.multiplier || 1);
+      const itemFare = Math.max(5, Math.round(baseFare * (RIDE_TYPES[item.id]?.multiplier || 1) * 100) / 100);
+
+      return (
+        <Pressable
+          key={item.id}
+          onPress={() => setRideType(item.id)}
+          style={{
+            padding: 17,
+            marginBottom: 12,
+            borderRadius: 16,
+            backgroundColor: selected ? "#EFF6FF" : "#FFFFFF",
+            borderWidth: selected ? 2 : 1,
+            borderColor: selected ? "#2563EB" : "#E2E8F0"
+          }}
+        >
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: "#0F172A", fontSize: 17, fontWeight: "900" }}>
+                {item.name}
+              </Text>
+              <Text style={{ color: "#64748B", fontSize: 12, marginTop: 5 }}>
+                {item.seats} · {item.description}
+              </Text>
+              <Text style={{ color: "#475569", fontSize: 11, marginTop: 7 }}>
+                Estimated trip: {estimatedMinutes} min
+              </Text>
+              {item.id === "comfort" && (
+                <Text style={{ color: "#2563EB", fontSize: 10, fontWeight: "900", marginTop: 6 }}>
+                  RECOMMENDED
+                </Text>
+              )}
+            </View>
+            <View style={{ alignItems: "flex-end" }}>
+              <Text style={{ color: "#1D4ED8", fontSize: 17, fontWeight: "900" }}>
+                {formatMoney(itemFare)}
+              </Text>
+              <Text style={{ color: "#2563EB", fontSize: 10, marginTop: 5 }}>
+                {selected ? "SELECTED ✓" : "SELECT"}
+              </Text>
+            </View>
+          </View>
+        </Pressable>
+      );
+    })}
+
+    <View style={{ backgroundColor: "#FFFFFF", padding: 17, borderRadius: 15, marginTop: 5 }}>
+      <Text style={{ color: "#64748B", fontSize: 12 }}>Estimated trip fare</Text>
+      <Text style={{ color: "#0F172A", fontSize: 27, fontWeight: "900", marginTop: 5 }}>
+        {formatMoney(estimatedFare)}
+      </Text>
+      <Text style={{ color: "#64748B", fontSize: 11, marginTop: 5 }}>
+        {distance ? `${Number(distance).toFixed(1)} km estimated distance` : "Distance estimate unavailable"}
+      </Text>
+      <Text style={{ color: "#64748B", fontSize: 10, marginTop: 7 }}>
+        Final fare may differ based on the actual route.
+      </Text>
+    </View>
+
+    {stops.length > 0 && (
+      <View style={{ backgroundColor: "#FEF3C7", padding: 13, borderRadius: 12, marginTop: 12 }}>
+        <Text style={{ color: "#92400E", fontSize: 12, lineHeight: 19 }}>
+          Additional stops are saved in this booking. Backend and driver-app support is still required before they can be included in a real ride.
+        </Text>
+      </View>
+    )}
+
+    <Pressable
+      onPress={() => goToBookingStep("confirm")}
+      style={{ backgroundColor: "#2563EB", padding: 18, borderRadius: 15, alignItems: "center", marginTop: 20 }}
+    >
+      <Text style={{ color: "#FFFFFF", fontWeight: "900", fontSize: 15 }}>
+        Continue to confirmation →
+      </Text>
+    </Pressable>
+  </ScrollView>
+) : (
+          <ScrollView
+            style={{ flex: 1, backgroundColor: "#F8FAFC" }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: 35 }}
+          >
+            <View style={{ height: 300, backgroundColor: "#DBEAFE" }}>
+              <MapView
+                style={{ flex: 1 }}
+                region={mapRegion}
+                showsUserLocation
+                showsMyLocationButton={false}
+              >
+                {pickupPoint && (
+                  <Marker
+                    coordinate={{
+                      latitude: Number(pickupPoint.lat),
+                      longitude: Number(pickupPoint.lng),
+                    }}
+                    title="Pickup"
+                    pinColor="#2563EB"
+                  />
+                )}
+
+                {destinationPoint && (
+                  <Marker
+                    coordinate={{
+                      latitude: Number(destinationPoint.lat),
+                      longitude: Number(destinationPoint.lng),
+                    }}
+                    title="Destination"
+                    pinColor="#171717"
+                  />
+                )}
+
+                {pickupPoint && destinationPoint && (
+                  <Polyline
+                    coordinates={[
+                      {
+                        latitude: Number(pickupPoint.lat),
+                        longitude: Number(pickupPoint.lng),
+                      },
+                      {
+                        latitude: Number(destinationPoint.lat),
+                        longitude: Number(destinationPoint.lng),
+                      },
+                    ]}
+                    strokeWidth={4}
+                    strokeColor="#2563EB"
+                  />
+                )}
+              </MapView>
+
+              <View style={{
+                position: "absolute",
+                top: 15,
+                left: 18,
+                backgroundColor: "#FFFFFF",
+                paddingHorizontal: 14,
+                paddingVertical: 9,
+                borderRadius: 20,
+                elevation: 3
+              }}>
+                <Text style={{ color: "#1D4ED8", fontSize: 12, fontWeight: "900" }}>
+                  EAZI'S RIDE
+                </Text>
+              </View>
+            </View>
+
+            <View style={{
+              marginHorizontal: 16,
+              marginTop: 0,
+              backgroundColor: "#FFFFFF",
+              borderRadius: 20,
+              padding: 17,
+              borderWidth: 1,
+              borderColor: "#E2E8F0",
+              elevation: 5,
+              shadowColor: "#000000",
+              shadowOpacity: 0.08,
+              shadowRadius: 8,
+              shadowOffset: { width: 0, height: 3 },
+              zIndex: 2
+            }}>
+              <Text style={{ fontSize: 23, fontWeight: "900", color: "#0F172A" }}>
+                Where to?
+              </Text>
+              <Text style={{ fontSize: 12, color: "#64748B", marginTop: 4, marginBottom: 15 }}>
+                Enter your pickup and destination.
+              </Text>
+
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <View style={{
+                  width: 11,
+                  height: 11,
+                  borderRadius: 6,
+                  backgroundColor: "#2563EB",
+                  marginRight: 12
+                }} />
+
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 10, color: "#64748B", fontWeight: "700" }}>
+                    PICKUP LOCATION
+                  </Text>
+                  <TextInput
+                    value={pickup}
+                    onChangeText={(value) => {
+                      setPickup(value);
+                      setPickupPoint(null);
+                    }}
+                    placeholder="Enter pickup location"
+                    placeholderTextColor="#94A3B8"
+                    style={{
+                      color: "#0F172A",
+                      paddingVertical: 8,
+                      fontSize: 14
+                    }}
+                    onSubmitEditing={() => findSuggestions("pickup")}
+                  />
+                </View>
+
+                <Pressable
+                  onPress={() => findSuggestions("pickup")}
+                  style={{ padding: 9 }}
+                >
+                  <Text style={{ color: "#2563EB", fontWeight: "900", fontSize: 12 }}>
+                    Search
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={{
+                height: 1,
+                backgroundColor: "#E2E8F0",
+                marginVertical: 5,
+                marginLeft: 23
+              }} />
+
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                <View style={{
+                  width: 11,
+                  height: 11,
+                  borderRadius: 2,
+                  backgroundColor: "#0F172A",
+                  marginRight: 12
+                }} />
+
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 10, color: "#64748B", fontWeight: "700" }}>
+                    DESTINATION
+                  </Text>
+                  <TextInput
+                    value={destination}
+                    onChangeText={(value) => {
+                      setDestination(value);
+                      setDestinationPoint(null);
+                    }}
+                    placeholder="Where are you going?"
+                    placeholderTextColor="#94A3B8"
+                    style={{
+                      color: "#0F172A",
+                      paddingVertical: 8,
+                      fontSize: 14
+                    }}
+                    onSubmitEditing={() => findSuggestions("destination")}
+                  />
+                </View>
+
+                <Pressable
+                  onPress={() => findSuggestions("destination")}
+                  style={{ padding: 9 }}
+                >
+                  <Text style={{ color: "#2563EB", fontWeight: "900", fontSize: 12 }}>
+                    Search
+                  </Text>
+                </Pressable>
+              </View>
+
+              <Pressable
+                onPress={locate}
+                style={{
+                  marginTop: 10,
+                  paddingTop: 12,
+                  borderTopWidth: 1,
+                  borderTopColor: "#E2E8F0"
+                }}
+              >
+                <Text style={{ color: "#2563EB", fontWeight: "800", fontSize: 13 }}>
+                  Use my current location
+                </Text>
+              </Pressable>
+            </View>
+
+            {suggestionTarget?.startsWith('stop:') && suggestions?.length > 0 && (
+              <View style={{
+                marginHorizontal: 16,
+                marginTop: 10,
+                backgroundColor: "#FFFFFF",
+                borderRadius: 14,
+                overflow: "hidden",
+                borderWidth: 1,
+                borderColor: "#E2E8F0"
+              }}>
+                {suggestions.map((place, index) => (
+                  <Pressable
+                    key={place.place_id || place.osm_id || index}
+                    onPress={() => chooseSuggestion(place)}
+                    style={{
+                      padding: 14,
+                      borderBottomWidth: index === suggestions.length - 1 ? 0 : 1,
+                      borderBottomColor: "#E2E8F0"
+                    }}
+                  >
+                    <Text style={{ color: "#0F172A", fontSize: 13 }}>
+                      {place.label || place.display_name || place.name || "Location"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            <View style={{ paddingHorizontal: 16, paddingTop: 25 }}>
+              <Text style={{ fontSize: 20, fontWeight: "900", color: "#0F172A" }}>
+                Choose your ride
+              </Text>
+              <Text style={{ color: "#64748B", fontSize: 12, marginTop: 4, marginBottom: 13 }}>
+                Select the vehicle that suits your journey.
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 9 }}>
+                {[
+                  { name: "economy", label: "Economy", seats: "4 seats", description: "Affordable" },
+                  { name: "comfort", label: "Comfort", seats: "4 seats", description: "Extra comfort" },
+                  { name: "xl", label: "XL", seats: "6 seats", description: "More space" },
+                ].map((item) => {
+                  const selected = rideType === item.name;
+                  const baseFare = Number(estimatedFare || 0) /
+                    (RIDE_TYPES[rideType]?.multiplier || 1);
+                  const itemFare = baseFare *
+                    (RIDE_TYPES[item.name]?.multiplier || 1);
+
+                  return (
+                    <Pressable
+                      key={item.name}
+                      onPress={() => setRideType(item.name)}
+                      style={{
+                        flex: 1,
+                        backgroundColor: selected ? "#EFF6FF" : "#FFFFFF",
+                        borderWidth: selected ? 2 : 1,
+                        borderColor: selected ? "#2563EB" : "#E2E8F0",
+                        borderRadius: 15,
+                        padding: 10
+                      }}
+                    >
+                      <Text style={{ fontSize: 12, color: "#2563EB", fontWeight: "900" }}>
+                        {item.name === "economy" ? "STANDARD" :
+                          item.name === "comfort" ? "COMFORT" : "XL"}
+                      </Text>
+
+                      <Text style={{
+                        fontSize: 12,
+                        fontWeight: "900",
+                        color: "#0F172A",
+                        marginTop: 9
+                      }}>
+                        {item.label}
+                      </Text>
+
+                      <Text style={{ fontSize: 10, color: "#64748B", marginTop: 4 }}>
+                        {item.seats}
+                      </Text>
+
+                      <Text style={{ fontSize: 9, color: "#64748B", marginTop: 3 }}>
+                        {item.description}
+                      </Text>
+
+                      <Text style={{
+                        fontSize: 12,
+                        color: "#1D4ED8",
+                        fontWeight: "900",
+                        marginTop: 10
+                      }}>
+                        {formatMoney(itemFare)}
+                      </Text>
+
+                      {selected && (
+                        <Text style={{
+                          fontSize: 9,
+                          color: "#2563EB",
+                          fontWeight: "900",
+                          marginTop: 4
+                        }}>
+                          SELECTED
+                        </Text>
+                      )}
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={{
+                fontSize: 19,
+                fontWeight: "900",
+                color: "#0F172A",
+                marginTop: 25,
+                marginBottom: 12
+              }}>
+                Payment method
+              </Text>
+
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                {["cash", "mobile_money"].map((method) => {
+                  const selected = payment === method;
+
+                  return (
+                    <Pressable
+                      key={method}
+                      onPress={() => setPayment(method)}
+                      style={{
+                        flex: 1,
+                        padding: 15,
+                        borderRadius: 14,
+                        borderWidth: selected ? 2 : 1,
+                        borderColor: selected ? "#2563EB" : "#E2E8F0",
+                        backgroundColor: selected ? "#EFF6FF" : "#FFFFFF"
+                      }}
+                    >
+                      <Text style={{
+                        fontSize: 13,
+                        fontWeight: "900",
+                        color: "#0F172A"
+                      }}>
+                        {method === "cash" ? "Cash" : "Mobile Money"}
+                      </Text>
+
+                      <Text style={{
+                        fontSize: 10,
+                        color: selected ? "#1D4ED8" : "#64748B",
+                        marginTop: 5
+                      }}>
+                        {selected ? "Selected" : "Tap to select"}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <View style={{
+                backgroundColor: "#0F172A",
+                borderRadius: 17,
+                padding: 18,
+                marginTop: 22
+              }}>
+                <Text style={{ color: "#CBD5E1", fontSize: 12 }}>
+                  Estimated trip fare
+                </Text>
+
+                <Text style={{
+                  color: "#FFFFFF",
+                  fontSize: 28,
+                  fontWeight: "900",
+                  marginTop: 5
+                }}>
+                  {formatMoney(estimatedFare)}
+                </Text>
+
+                <Text style={{ color: "#CBD5E1", fontSize: 11, marginTop: 6 }}>
+                  {distance
+                    ? `${Number(distance).toFixed(1)} km estimated distance`
+                    : "Enter your locations to estimate your fare"}
+                </Text>
+
+                <View style={{
+                  height: 1,
+                  backgroundColor: "#334155",
+                  marginVertical: 13
+                }} />
+
+                <Text style={{ color: "#CBD5E1", fontSize: 11 }}>
+                  Vehicle: {RIDE_TYPES[rideType]?.label || rideType}
+                </Text>
+
+                <Text style={{ color: "#CBD5E1", fontSize: 11, marginTop: 5 }}>
+                  Payment: {payment === "cash" ? "Cash" : "Mobile Money"}
+                </Text>
+              </View>
+
+              <Pressable
+                onPress={bookRide}
+                disabled={busy}
+                style={{
+                  backgroundColor: busy ? "#93C5FD" : "#2563EB",
+                  borderRadius: 15,
+                  paddingVertical: 18,
+                  alignItems: "center",
+                  marginTop: 15,
+                  elevation: 3
+                }}
+              >
+                <Text style={{
+                  color: "#FFFFFF",
+                  fontWeight: "900",
+                  fontSize: 16
+                }}>
+                  {busy ? "Requesting..." : "Find me a ride"}
+                </Text>
+              </Pressable>
+
+              {currentRide && (
+                <View style={{
+                  marginTop: 15,
+                  padding: 15,
+                  borderRadius: 14,
+                  backgroundColor: "#EFF6FF"
+                }}>
+                  <Text style={{ fontWeight: "900", color: "#0F172A" }}>
+                    You have an active ride
+                  </Text>
+
+                  <Text style={{ color: "#475569", fontSize: 12, marginTop: 5 }}>
+                    Check Activity for your ride details.
+                  </Text>
+
+                  <Pressable
+                    onPress={() => setTab("activity")}
+                    style={{ marginTop: 9 }}
+                  >
+                    <Text style={{ color: "#1D4ED8", fontWeight: "800" }}>
+                      View ride
+                    </Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          </ScrollView>
+          )
+        ) : tab === "activity" ? (
+          <ScrollView
+            style={{ flex: 1 }}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 35 }}
+          >
+            <Text style={{ fontSize: 25, fontWeight: "900", color: "#171717", marginTop: 10 }}>
+              Your activity
+            </Text>
+            <Text style={{ color: "#777", fontSize: 13, marginTop: 5, marginBottom: 20 }}>
+              Your recent and ongoing rides.
+            </Text>
+
+            {history?.length ? history.map((ride, index) => (
+              <View
+                key={ride.id || index}
+                style={{ backgroundColor: "white", borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: "#E2E8F0" }}
+              >
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={{ fontWeight: "900", color: "#171717" }}>
+                    {ride.ride_type || "Ride"}
+                  </Text>
+                  <Text style={{ fontSize: 11, fontWeight: "800", color: "#1D4ED8" }}>
+                    {ride.status || "Pending"}
+                  </Text>
+                </View>
+
+                <Text style={{ color: "#555", fontSize: 12, marginTop: 12 }}>
+                  Pickup: {ride.pickup_address || "Pickup"}
+                </Text>
+                <Text style={{ color: "#555", fontSize: 12, marginTop: 8 }}>
+                  Destination: {ride.destination_address || "Destination"}
+                </Text>
+
+                <Text style={{ color: "#171717", fontWeight: "900", marginTop: 12 }}>
+                  {formatMoney(ride.fare)}
+                </Text>
+
+                {["requested", "accepted", "driver_assigned"].includes(ride.status) && (
+                  <Pressable
+                    onPress={() => cancel(ride)}
+                    style={{ marginTop: 12, padding: 10, borderRadius: 10, backgroundColor: "#FFF0F0", alignItems: "center" }}
+                  >
+                    <Text style={{ color: "#B42318", fontWeight: "800", fontSize: 12 }}>
+                      Cancel ride
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )) : (
+              <View style={{ backgroundColor: "white", borderRadius: 16, padding: 25, alignItems: "center" }}>
+                <Text style={{ color: "#171717", fontWeight: "900", fontSize: 16, marginTop: 12 }}>
+                  No rides yet
+                </Text>
+                <Text style={{ color: "#777", fontSize: 12, textAlign: "center", marginTop: 6 }}>
+                  Your completed and ongoing rides will appear here.
+                </Text>
+                <Pressable onPress={() => setTab("book")} style={{ marginTop: 16, backgroundColor: "#2563EB", paddingHorizontal: 20, paddingVertical: 11, borderRadius: 10 }}>
+                  <Text style={{ color: "#171717", fontWeight: "900" }}>Book a ride</Text>
+                </Pressable>
+              </View>
+            )}
+
+            <Pressable
+              onPress={signOut}
+              style={{ padding: 15, alignItems: "center", marginTop: 12 }}
+            >
+              <Text style={{ color: "#B42318", fontWeight: "800" }}>
+                Sign out
+              </Text>
+            </Pressable>
+          </ScrollView>
+        ) : (
+          <ScrollView
+            style={{ flex: 1 }}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+          >
+            {accountPage === "main" ? (
+              <>
+                <Text style={{ fontSize: 25, fontWeight: "900", color: "#0F172A" }}>
+                  Account
+                </Text>
+                <Text style={{ color: "#64748B", marginTop: 5, marginBottom: 18 }}>
+                  Manage your Eazi Ride account and preferences.
+                </Text>
+
+                <Pressable
+                  onPress={() => setAccountPage("profile")}
+                  style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#EFF6FF", borderRadius: 16, padding: 16, marginBottom: 18, borderWidth: 1, borderColor: "#BFDBFE" }}
+                >
+                  {avatarUrl ? (
+                    <Image source={{ uri: avatarUrl }} style={{ width: 54, height: 54, borderRadius: 27 }} />
+                  ) : (
+                    <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: "#DBEAFE", alignItems: "center", justifyContent: "center" }}>
+                      <Text style={{ color: "#1D4ED8", fontSize: 22, fontWeight: "900" }}>
+                        {(profile?.full_name || "R").charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={{ flex: 1, marginLeft: 13 }}>
+                    <Text style={{ color: "#0F172A", fontWeight: "900", fontSize: 16 }}>
+                      {profile?.full_name || "Your profile"}
+                    </Text>
+                    <Text style={{ color: "#64748B", fontSize: 12, marginTop: 4 }}>
+                      View and edit your profile
+                    </Text>
+                  </View>
+                  <Text style={{ color: "#2563EB", fontSize: 22 }}>›</Text>
+                </Pressable>
+
+                {[
+                  { key: "payment", title: "Payment", subtitle: "Eazi Balance and payment methods", icon: "💳" },
+                  { key: "support", title: "Support", subtitle: "Get help with your rides and account", icon: "🎧" },
+                  { key: "safety", title: "Safety", subtitle: "Your safety tools and information", icon: "🛡️" },
+                  { key: "saved", title: "Saved Places", subtitle: "Manage your favourite destinations", icon: "📍" },
+                  { key: "settings", title: "Settings", subtitle: "Communication, privacy, language and more", icon: "⚙️" },
+                  { key: "food", title: "Eazi Food", subtitle: "Food delivery services", icon: "🍔" },
+                  { key: "promotions", title: "Promotions", subtitle: "Offers, discounts and referral rewards", icon: "🎁" },
+                  { key: "family", title: "Family Profile", subtitle: "Manage family ride arrangements", icon: "👨‍👩‍👧" },
+                  { key: "work", title: "Work Profile", subtitle: "Separate work-related rides", icon: "💼" },
+                  { key: "earn", title: "Earn with Eazi", subtitle: "Explore opportunities to earn", icon: "🚘" }
+                ].map((item) => (
+                  <Pressable
+                    key={item.key}
+                    onPress={() => setAccountPage(item.key)}
+                    style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#FFFFFF", padding: 15, borderRadius: 14, marginBottom: 9, borderWidth: 1, borderColor: "#E2E8F0" }}
+                  >
+                    <Text style={{ fontSize: 22, width: 38 }}>{item.icon}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: "#0F172A", fontWeight: "800", fontSize: 14 }}>{item.title}</Text>
+                      <Text style={{ color: "#64748B", fontSize: 11, marginTop: 4 }}>{item.subtitle}</Text>
+                    </View>
+                    <Text style={{ color: "#2563EB", fontSize: 22 }}>›</Text>
+                  </Pressable>
+                ))}
+
+                <Pressable
+                  onPress={signOut}
+                  style={{ padding: 16, alignItems: "center", marginTop: 12, borderRadius: 12, backgroundColor: "#FEF2F2" }}
+                >
+                  <Text style={{ color: "#B91C1C", fontWeight: "900" }}>Log out</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  onPress={() => setAccountPage("main")}
+                  style={{ paddingVertical: 10, marginBottom: 12 }}
+                >
+                  <Text style={{ color: "#2563EB", fontWeight: "800", fontSize: 15 }}>‹ Back to Account</Text>
+                </Pressable>
+
+                <Text style={{ fontSize: 23, fontWeight: "900", color: "#0F172A", marginBottom: 16 }}>
+                  {{
+                    profile: "Profile",
+                    payment: "Payment",
+                    support: "Support",
+                    safety: "Safety",
+                    saved: "Saved Places",
+                    settings: "Settings",
+                    food: "Eazi Food",
+                    promotions: "Promotions",
+                    family: "Family Profile",
+                    work: "Work Profile",
+                    earn: "Earn with Eazi"
+                  }[accountPage] || "Account"}
+                </Text>
+
+                {accountPage === "profile" ? (
+                  <View style={{ backgroundColor: "#FFFFFF", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0" }}>
+                    <Text style={{ color: "#64748B", fontSize: 12, marginBottom: 5 }}>Full name</Text>
+                    <Text style={{ color: "#0F172A", fontWeight: "800", fontSize: 16 }}>{profile?.full_name || "Not provided"}</Text>
+                    <Text style={{ color: "#64748B", fontSize: 12, marginTop: 16, marginBottom: 5 }}>Email address</Text>
+                    <Text style={{ color: "#0F172A", fontWeight: "700" }}>{profile?.email || "Not provided"}</Text>
+                    <Text style={{ color: "#64748B", fontSize: 12, marginTop: 16, marginBottom: 5 }}>Phone number</Text>
+                    <Text style={{ color: "#0F172A", fontWeight: "700" }}>{profile?.phone || "Not provided"}</Text>
+
+                    <Pressable onPress={uploadAvatar} style={{ backgroundColor: "#2563EB", padding: 14, borderRadius: 12, alignItems: "center", marginTop: 22 }}>
+                      <Text style={{ color: "#FFFFFF", fontWeight: "800" }}>Add / Change Profile Picture</Text>
+                    </Pressable>
+
+                    <View style={{ marginTop: 18, padding: 13, backgroundColor: "#EFF6FF", borderRadius: 12 }}>
+                      <Text style={{ color: "#1D4ED8", fontWeight: "800" }}>Email verification</Text>
+                      <Text style={{ color: "#64748B", fontSize: 12, marginTop: 5 }}>Verification status and email editing still need to be connected.</Text>
+                    </View>
+                    <View style={{ marginTop: 10, padding: 13, backgroundColor: "#EFF6FF", borderRadius: 12 }}>
+                      <Text style={{ color: "#1D4ED8", fontWeight: "800" }}>Identity verification</Text>
+                      <Text style={{ color: "#64748B", fontSize: 12, marginTop: 5 }}>Identity verification is not yet connected.</Text>
+                    </View>
+                  </View>
+                ) : accountPage === "settings" ? (
+                  <View style={{ backgroundColor: "#FFFFFF", padding: 15, borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0" }}>
+                    {[
+                      "Communication",
+                      "Calendar",
+                      "Language",
+                      "Privacy",
+                      "Sign in and Security",
+                      "Legal"
+                    ].map((item) => (
+                      <View key={item} style={{ paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: "#E2E8F0" }}>
+                        <Text style={{ color: "#0F172A", fontWeight: "800" }}>{item}</Text>
+                        <Text style={{ color: "#64748B", fontSize: 11, marginTop: 4 }}>Settings options will be connected here.</Text>
+                      </View>
+                    ))}
+                    <Pressable onPress={signOut} style={{ paddingVertical: 17 }}>
+                      <Text style={{ color: "#B91C1C", fontWeight: "900" }}>Log out</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View style={{ backgroundColor: "#EFF6FF", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#BFDBFE" }}>
+                    <Text style={{ color: "#1D4ED8", fontWeight: "900", fontSize: 15 }}>Coming soon</Text>
+                    <Text style={{ color: "#475569", fontSize: 13, lineHeight: 20, marginTop: 8 }}>
+                      This section is part of the Eazi Ride account experience. Its services and backend integration are not yet connected.
+                    </Text>
+                  </View>
+                )}
+              </>
+            )}
+          </ScrollView>
+        )}
+        <View style={{ flexDirection: "row", marginHorizontal: 0, marginTop: "auto", backgroundColor: "#FFFFFF", paddingHorizontal: 12, paddingTop: 10, paddingBottom: 10, borderTopWidth: 1, borderColor: "#DBEAFE" }}>
+          <Pressable
+            onPress={() => setTab("book")}
+            style={{ flex: 1, paddingVertical: 11, borderRadius: 11, backgroundColor: tab === "book" ? "#2563EB" : "transparent", alignItems: "center" }}
+          >
+            <Text style={{ fontWeight: "800", color: tab === "book" ? "#FFFFFF" : "#64748B" }}>Home</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setTab("activity")}
+            style={{ flex: 1, paddingVertical: 11, borderRadius: 11, backgroundColor: tab === "activity" ? "#2563EB" : "transparent", alignItems: "center" }}
+          >
+            <Text style={{ fontWeight: "800", color: tab === "activity" ? "#FFFFFF" : "#64748B" }}>Activity</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => { setTab("account"); setAccountPage("main"); }}
+            style={{ flex: 1, paddingVertical: 11, borderRadius: 11, backgroundColor: tab === "account" ? "#2563EB" : "transparent", alignItems: "center" }}
+          >
+            <Text style={{ fontWeight: "800", color: tab === "account" ? "#FFFFFF" : "#64748B" }}>Account</Text>
+          </Pressable>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
 }
 const styles=StyleSheet.create({safe:{flex:1,backgroundColor:'#F8FAFC'},center:{flex:1,justifyContent:'center',alignItems:'center',padding:24},auth:{flexGrow:1,justifyContent:'center',width:'100%',gap:12,padding:22,paddingBottom:40},fieldWrap:{marginVertical:3},fieldLabel:{fontSize:13,fontWeight:'700',color:'#334155',marginBottom:4},authSwitch:{flexDirection:'row',gap:8},authChoice:{flex:1,padding:12,alignItems:'center',borderRadius:10,backgroundColor:'#E2E8F0'},authChoiceActive:{backgroundColor:'#DBEAFE',borderWidth:1,borderColor:'#2563EB'},passwordRow:{flexDirection:'row',alignItems:'flex-end',gap:8},eyeButton:{height:50,justifyContent:'center',paddingHorizontal:12,backgroundColor:'#EFF6FF',borderRadius:12},profileHeader:{flexDirection:'row',alignItems:'center',gap:10},avatar:{width:48,height:48,borderRadius:24},avatarPlaceholder:{width:48,height:48,borderRadius:24,backgroundColor:'#DBEAFE',alignItems:'center',justifyContent:'center'},avatarInitial:{fontSize:20,fontWeight:'900',color:'#1D4ED8'},suggestionBox:{backgroundColor:'#fff',borderRadius:14,padding:10,borderWidth:1,borderColor:'#CBD5E1'},suggestionItem:{paddingVertical:12,borderBottomWidth:1,borderBottomColor:'#E2E8F0'},suggestionText:{fontSize:13,color:'#334155'},brandLogo:{width:230,height:76,alignSelf:'center'},brand:{fontSize:22,fontWeight:'900',letterSpacing:1,color:'#1E3A8A'},subtitle:{color:'#64748B',textAlign:'center',marginBottom:12},heading:{fontSize:23,fontWeight:'800',color:'#0F172A',marginVertical:12},muted:{color:'#64748B',fontSize:13},small:{color:'#64748B',fontSize:11,lineHeight:16},header:{padding:18,backgroundColor:'#fff',flexDirection:'row',alignItems:'center',justifyContent:'space-between',borderBottomWidth:1,borderColor:'#E2E8F0'},link:{color:'#2563EB',fontWeight:'700',padding:8},input:{backgroundColor:'#fff',borderColor:'#CBD5E1',borderWidth:1,borderRadius:14,padding:15,fontSize:15,color:'#0F172A',marginVertical:5},button:{backgroundColor:'#2563EB',padding:16,borderRadius:14,alignItems:'center',marginVertical:6},buttonText:{color:'#fff',fontWeight:'800',fontSize:15},secondary:{backgroundColor:'#EFF6FF',borderWidth:1,borderColor:'#BFDBFE'},secondaryText:{color:'#1D4ED8'},tabs:{flexDirection:'row',backgroundColor:'#fff',paddingHorizontal:12},tab:{flex:1,padding:15,alignItems:'center',borderBottomWidth:3,borderColor:'transparent'},tabActive:{borderColor:'#2563EB'},tabText:{color:'#64748B',fontWeight:'600'},tabTextActive:{color:'#1D4ED8',fontWeight:'800'},content:{padding:18,paddingBottom:36,gap:8},map:{height:220,borderRadius:16,marginVertical:10},section:{fontWeight:'800',fontSize:16,color:'#0F172A',marginTop:14},rideTypes:{flexDirection:'row',gap:8},rideCard:{flex:1,padding:14,borderRadius:14,borderWidth:1,borderColor:'#CBD5E1',backgroundColor:'#fff'},rideSelected:{borderColor:'#2563EB',backgroundColor:'#EFF6FF'},rideName:{fontWeight:'800',color:'#0F172A'},estimate:{padding:16,backgroundColor:'#fff',borderRadius:16,marginVertical:12},fare:{fontSize:25,fontWeight:'900',color:'#1D4ED8',marginVertical:4},rideHistory:{backgroundColor:'#fff',padding:16,borderRadius:16,marginBottom:12,borderWidth:1,borderColor:'#E2E8F0'},row:{flexDirection:'row',justifyContent:'space-between',alignItems:'center'},fareSmall:{fontWeight:'900',color:'#1D4ED8'},address:{fontSize:13,color:'#334155',marginTop:6},footer:{padding:10,alignItems:'center',borderTopWidth:1,borderColor:'#E2E8F0'},error:{color:'#B91C1C',backgroundColor:'#FEE2E2',padding:12,borderRadius:12,marginVertical:8}});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+

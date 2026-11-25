@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
@@ -8,10 +8,11 @@ import Drivers from './pages/Drivers';
 import Rides from './pages/Rides';
 import Users from './pages/Users';
 import Payments from './pages/Payments';
+import Pricing from './pages/Pricing';
 
 const AdminOnly = () => {
   const { user, profile, loading, logoutUser } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-muted">Loading…</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-muted">Loadingâ€¦</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (profile?.role !== 'admin') {
     return (
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="/rides" element={<Rides />} />
             <Route path="/users" element={<Users />} />
             <Route path="/payments" element={<Payments />} />
+            <Route path="/pricing" element={<Pricing />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -46,3 +48,5 @@ export default function App() {
     </BrowserRouter>
   );
 }
+
+

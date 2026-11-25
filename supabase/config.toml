@@ -7,3 +7,6 @@ verify_jwt = false
 
 [functions.ride-push]
 verify_jwt = false
+
+[functions.send-sms]
+verify_jwt = false

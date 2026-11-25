@@ -3,9 +3,21 @@ import { Webhook } from "https://esm.sh/standardwebhooks@1.0.0";
 const ARKESEL_URL = "https://sms.arkesel.com/api/v2/sms/send";
 const SENDER_ID = "EAZIRIDE";
 
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
+    return jsonResponse(
+      { error: { message: "Method not allowed" } },
+      405,
+    );
   }
 
   const apiKey = Deno.env.get("ARKESEL_API_KEY");
@@ -14,9 +26,10 @@ Deno.serve(async (req: Request) => {
   if (!apiKey || !hookSecret) {
     console.error("Required SMS configuration is missing.");
 
-    return new Response("SMS service configuration error", {
-      status: 500,
-    });
+    return jsonResponse(
+      { error: { message: "SMS service configuration error" } },
+      500,
+    );
   }
 
   try {
@@ -26,6 +39,7 @@ Deno.serve(async (req: Request) => {
     const webhook = new Webhook(secret);
 
     const headers = Object.fromEntries(req.headers);
+
     const { user, sms } = webhook.verify(payload, headers) as {
       user: { phone?: string };
       sms: { otp?: string };
@@ -35,9 +49,10 @@ Deno.serve(async (req: Request) => {
     const otp = sms?.otp;
 
     if (!phone || !otp) {
-      return new Response("Invalid SMS request", {
-        status: 400,
-      });
+      return jsonResponse(
+        { error: { message: "Invalid SMS request" } },
+        400,
+      );
     }
 
     const message =
@@ -62,20 +77,22 @@ Deno.serve(async (req: Request) => {
     if (!arkeselResponse.ok || result.status !== "success") {
       console.error("Arkesel SMS delivery request failed.");
 
-      return new Response("SMS delivery failed", {
-        status: 502,
-      });
+      return jsonResponse(
+        { error: { message: "SMS delivery failed" } },
+        502,
+      );
     }
 
-    return new Response(null, { status: 200 });
+    return jsonResponse({}, 200);
   } catch (error) {
     console.error(
       "SMS hook processing failed:",
       error instanceof Error ? error.message : "Unknown error",
     );
 
-    return new Response("SMS processing failed", {
-      status: 400,
-    });
+    return jsonResponse(
+      { error: { message: "SMS processing failed" } },
+      400,
+    );
   }
 });

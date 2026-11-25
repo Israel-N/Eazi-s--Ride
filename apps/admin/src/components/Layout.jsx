@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Banknote, Car, IdCard, LayoutDashboard, LogOut, Users } from 'lucide-react';
+import { Banknote, Car, IdCard, LayoutDashboard, LogOut, SlidersHorizontal, Users } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 
@@ -10,6 +10,7 @@ const NAV = [
   { to: '/rides', label: 'Rides', icon: Car },
   { to: '/users', label: 'Users', icon: Users },
   { to: '/payments', label: 'Payments', icon: Banknote },
+  { to: '/pricing', label: 'Pricing', icon: SlidersHorizontal },
 ];
 
 export default function Layout() {
@@ -50,3 +51,4 @@ export default function Layout() {
     </div>
   );
 }
+
