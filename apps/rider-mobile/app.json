@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "Eazi's Ride",
+    "slug": "eazis-ride",
+    "scheme": "eazisride",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "icon": "./assets/expo/icon.png",
+    "android": {
+      "package": "com.eazisride.rider",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/expo/adaptive-icon.png",
+        "monochromeImage": "./assets/expo/monochrome-icon.png",
+        "backgroundColor": "#2563EB"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Eazi's Ride uses your location to set your pickup and support your trip."
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/expo/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#2563EB"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Eazi's Ride to use your location to set your pickup and support your trip."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Eazi's Ride needs access to your photos so you can choose a profile picture."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e98d32ad-d7e5-484f-a263-61958b586c09"
+      }
+    },
+    "owner": "eaziii"
+  }
+}

@@ -1,0 +1,84 @@
+﻿{
+    "expo":  {
+                 "name":  "Eazi Driver",
+                 "slug":  "eazi-driver",
+                 "scheme":  "eazidriver",
+                 "version":  "1.0.0",
+                 "orientation":  "portrait",
+                 "userInterfaceStyle":  "light",
+                 "ios":  {
+                             "supportsTablet":  false,
+                             "infoPlist":  {
+                                               "NSLocationWhenInUseUsageDescription":  "Eazi\u0027s Ride uses your location to offer nearby trips and share your location with your assigned passenger during a ride.",
+                                               "NSLocationAlwaysAndWhenInUseUsageDescription":  "Eazi\u0027s Ride shares your location with your assigned passenger during an active trip, including when you use another app.",
+                                               "UIBackgroundModes":  [
+                                                                         "location",
+                                                                         "remote-notification"
+                                                                     ]
+                                           }
+                         },
+                 "android":  {
+                                 "package":  "com.eazisride.driver",
+                                 "permissions":  [
+                                                     "ACCESS_COARSE_LOCATION",
+                                                     "ACCESS_FINE_LOCATION",
+                                                     "ACCESS_BACKGROUND_LOCATION",
+                                                     "FOREGROUND_SERVICE",
+                                                     "FOREGROUND_SERVICE_LOCATION",
+                                                     "POST_NOTIFICATIONS",
+                                                     "android.permission.ACCESS_COARSE_LOCATION",
+                                                     "android.permission.ACCESS_FINE_LOCATION",
+                                                     "android.permission.ACCESS_BACKGROUND_LOCATION",
+                                                     "android.permission.FOREGROUND_SERVICE",
+                                                     "android.permission.FOREGROUND_SERVICE_LOCATION"
+                                                 ],
+                                 "config":  {
+
+                                            },
+                                 "adaptiveIcon":  {
+                                                      "foregroundImage":  "./assets/expo/adaptive-icon.png",
+                                                      "monochromeImage":  "./assets/expo/monochrome-icon.png",
+                                                      "backgroundColor":  "#0F172A"
+                                                  },
+                                 "googleServicesFile":  "./google-services.json"
+                             },
+                 "plugins":  [
+                                 [
+                                     "expo-location",
+                                     {
+                                         "locationWhenInUsePermission":  "Allow Eazi\u0027s Ride to use your location for nearby ride requests and live trip tracking.",
+                                         "locationAlwaysAndWhenInUsePermission":  "Allow Eazi\u0027s Ride to share your live location with your assigned passenger during an active trip, even when the app is in the background.",
+                                         "isAndroidBackgroundLocationEnabled":  true,
+                                         "isAndroidForegroundServiceEnabled":  true,
+                                         "foregroundService":  {
+                                                                   "notificationTitle":  "Eazi\u0027s Ride trip tracking is active",
+                                                                   "notificationBody":  "Your location is shared with your assigned passenger during this trip."
+                                                               }
+                                     }
+                                 ],
+                                 [
+                                     "expo-notifications",
+                                     {
+                                         "icon":  "./assets/expo/notification-icon.png",
+                                         "color":  "#22C55E",
+                                         "defaultChannel":  "rides"
+                                     }
+                                 ],
+                                 [
+                                     "expo-splash-screen",
+                                     {
+                                         "imageWidth":  200,
+                                         "backgroundColor":  "#0F172A",
+                                         "resizeMode":  "contain",
+                                         "image":  "./assets/expo/splash-icon.png"
+                                     }
+                                 ]
+                             ],
+                 "extra":  {
+                               "eas":  {
+                                           "projectId":  "e66780f6-e67a-489f-9195-2ec6bebab73b"
+                                       }
+                           },
+                 "icon":  "./assets/expo/icon.png"
+             }
+}

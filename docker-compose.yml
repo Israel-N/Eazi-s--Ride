@@ -1,0 +1,42 @@
+services:
+  rider:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?Set VITE_SUPABASE_URL in .env}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:?Set VITE_SUPABASE_PUBLISHABLE_KEY in .env}
+        VITE_DRIVER_APP_URL: ${VITE_DRIVER_APP_URL:-http://localhost:8081}
+        VITE_ADMIN_APP_URL: ${VITE_ADMIN_APP_URL:-http://localhost:8082}
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  driver:
+    build:
+      context: .
+      dockerfile: apps/driver-web/Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?Set VITE_SUPABASE_URL in .env}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:?Set VITE_SUPABASE_PUBLISHABLE_KEY in .env}
+        VITE_DRIVER_APP_URL: ${VITE_DRIVER_APP_URL:-http://localhost:8081}
+        VITE_ADMIN_APP_URL: ${VITE_ADMIN_APP_URL:-http://localhost:8082}
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    ports:
+      - "8081:80"
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?Set VITE_SUPABASE_URL in .env}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:?Set VITE_SUPABASE_PUBLISHABLE_KEY in .env}
+        VITE_DRIVER_APP_URL: ${VITE_DRIVER_APP_URL:-http://localhost:8081}
+        VITE_ADMIN_APP_URL: ${VITE_ADMIN_APP_URL:-http://localhost:8082}
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    ports:
+      - "8082:80"
+    restart: unless-stopped

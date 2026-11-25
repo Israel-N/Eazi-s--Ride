@@ -1,0 +1,12 @@
+node_modules/
+.expo/
+.git/
+.env
+.env.*
+android/
+ios/
+dist/
+*.log
+*.backup
+*.backup_*
+supabase/backups/
