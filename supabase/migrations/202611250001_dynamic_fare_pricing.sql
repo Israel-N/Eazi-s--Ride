@@ -1,4 +1,4 @@
--- Eazi's Ride dynamic fare pricing.
+﻿-- Eazi's Ride dynamic fare pricing.
 -- This migration is local project work only; it is not applied automatically.
 
 create table if not exists public.ride_pricing_settings (
@@ -141,6 +141,7 @@ begin
     from public.rides r
     where r.status='requested' and r.driver_id is null
       and r.created_at > now() - interval '15 minutes'
+      and (r.scheduled_at is null or r.scheduled_at <= now())
       and r.pickup_lat is not null and r.pickup_lng is not null
       and 6371 * acos(least(1.0,greatest(-1.0,
         cos(radians(p_pickup_lat))*cos(radians(r.pickup_lat))*cos(radians(r.pickup_lng)-radians(p_pickup_lng))+
@@ -202,7 +203,16 @@ declare
   v_quote public.ride_fare_quotes%rowtype;
   v_ride public.rides%rowtype;
 begin
-  if auth.uid() is null then raise exception 'Sign in to request a ride.' using errcode='28000'; end if;
+  if auth.uid() is null then
+    raise exception 'Sign in to request a ride.' using errcode='28000';
+  end if;
+
+  if not exists (
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'rider'
+  ) then
+    raise exception 'Only rider accounts can request rides.' using errcode='42501';
+  end if;
   if p_scheduled_at is not null and p_scheduled_at < now()+interval '5 minutes' then
     raise exception 'Scheduled rides must be at least 5 minutes in the future.' using errcode='22023';
   end if;
@@ -290,3 +300,5 @@ grant execute on function public.admin_update_ride_pricing(jsonb) to authenticat
 
 comment on table public.ride_pricing_settings is 'Server-controlled Eazi Ride fare configuration; read and write only through admin RPCs.';
 comment on table public.ride_fare_quotes is 'Short-lived rider-owned fare quotes; prices are locked when a ride is requested.';
+
+

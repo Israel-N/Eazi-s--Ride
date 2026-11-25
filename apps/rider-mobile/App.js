@@ -13,6 +13,8 @@ const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', 
   auth: { storage: AsyncStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
 });
 const RIDE_TYPES = { economy: { label: 'Economy', seats: 4, multiplier: 1 }, comfort: { label: 'Comfort', seats: 4, multiplier: 1.35 }, xl: { label: 'XL', seats: 6, multiplier: 1.7 } };
+const DYNAMIC_PRICING_ENABLED =
+  process.env.EXPO_PUBLIC_DYNAMIC_PRICING_ENABLED === 'true';
 const money = (n) => `GHS ${Number(n || 0).toFixed(2)}`;
 const haversine = (a,b) => { const rad=x=>x*Math.PI/180; const dLat=rad(b.lat-a.lat), dLng=rad(b.lng-a.lng); const x=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2; return 6371*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x)); };
 async function searchPlaces(query) {
@@ -46,7 +48,9 @@ function AppContent() {
   const [destinationSearchDone,setDestinationSearchDone]=useState(false);
   const [pickup,setPickup]=useState(''), [destination,setDestination]=useState(''), [pickupPoint,setPickupPoint]=useState(null), [destinationPoint,setDestinationPoint]=useState(null);
   const [rideCategory,setRideCategory]=useState('recommended');
-  const [rideType,setRideType]=useState('economy'), [payment,setPayment]=useState('cash'), [busy,setBusy]=useState(false), [error,setError]=useState('');
+  const [rideType,setRideType]=useState('economy'), [payment,setPayment]=useState('cash'), [busy,setBusy]=useState(false), [error,setError]='';
+  const [fareQuote,setFareQuote]=useState(null);
+  const [quoteLoading,setQuoteLoading]=useState(false);
   const [currentRide,setCurrentRide]=useState(null), [history,setHistory]=useState([]), [tab,setTab]=useState('book'), [accountPage,setAccountPage]=useState('main');
   const [bookingStep,setBookingStep]=useState('home'), [stops,setStops]=useState([]);
   const goToBookingStep = (step) => {
@@ -370,16 +374,142 @@ function AppContent() {
     }catch(e){setError(e.message);}
   };
 
-  const bookRide=async()=>{
-    if(!pickupPoint||!destinationPoint){setError('Resolve both locations before requesting a ride.');return;}
-    setBusy(true);setError('');
-    try{
-      const {data:{user}}=await supabase.auth.getUser();if(!user)throw new Error('Sign in before requesting a ride.');
-      const {data,error:rpcError}=await supabase.rpc('request_ride',{p_pickup_address:pickup,p_destination_address:destination,p_pickup_lat:pickupPoint.lat,p_pickup_lng:pickupPoint.lng,p_destination_lat:destinationPoint.lat,p_destination_lng:destinationPoint.lng,p_ride_type:rideType,p_scheduled_at:null,p_payment_method:payment});
-      if(rpcError)throw rpcError;setCurrentRide(data);setTab('activity');await refreshRides();Alert.alert('Ride requested','Your request has been sent to eligible nearby drivers.');
-    }catch(e){setError(e.message);}finally{setBusy(false);}
+  const prepareRideConfirmation = async () => {
+    if (!pickupPoint || !destinationPoint) {
+      setError('Resolve both locations before continuing.');
+      return;
+    }
+
+    setError('');
+
+    if (!DYNAMIC_PRICING_ENABLED) {
+      setFareQuote(null);
+      goToBookingStep('confirm');
+      return;
+    }
+
+    setQuoteLoading(true);
+
+    try {
+      const { data, error: quoteError } = await supabase.rpc(
+        'get_ride_fare_quote',
+        {
+          p_pickup_address: pickup,
+          p_destination_address: destination,
+          p_pickup_lat: pickupPoint.lat,
+          p_pickup_lng: pickupPoint.lng,
+          p_destination_lat: destinationPoint.lat,
+          p_destination_lng: destinationPoint.lng,
+          p_ride_type: rideType,
+          p_payment_method: payment
+        }
+      );
+
+      if (quoteError) throw quoteError;
+      if (!data?.quote_id || !Number.isFinite(Number(data.fare))) {
+        throw new Error('The fare service returned an invalid quote. Please try again.');
+      }
+
+      setFareQuote({
+        ...data,
+        snapshot: {
+          pickup,
+          destination,
+          pickupLat: pickupPoint.lat,
+          pickupLng: pickupPoint.lng,
+          destinationLat: destinationPoint.lat,
+          destinationLng: destinationPoint.lng,
+          rideType,
+          payment
+        }
+      });
+
+      goToBookingStep('confirm');
+    } catch (e) {
+      setError(e.message || 'Unable to calculate your fare. Please try again.');
+    } finally {
+      setQuoteLoading(false);
+    }
   };
-  const cancel=async(ride)=>{Alert.alert('Cancel ride','Are you sure you want to cancel this ride?',[{text:'Keep ride',style:'cancel'},{text:'Cancel ride',style:'destructive',onPress:async()=>{try{const{error:e}=await supabase.rpc('cancel_my_ride',{p_ride_id:ride.id,p_reason:'Cancelled by rider'});if(e)throw e;await refreshRides();}catch(err){setError(err.message);}}}]);};
+  const bookRide=async()=>{
+    if(!pickupPoint||!destinationPoint){
+      setError('Resolve both locations before requesting a ride.');
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+
+    try{
+      const {data:{user}}=await supabase.auth.getUser();
+      if(!user)throw new Error('Sign in before requesting a ride.');
+
+      let data;
+      let rpcError;
+
+      if(DYNAMIC_PRICING_ENABLED){
+        if(!fareQuote?.quote_id){
+          throw new Error('Please generate a fare quote before requesting your ride.');
+        }
+
+        const snapshot = fareQuote.snapshot;
+
+        const quoteMatches =
+          snapshot?.pickup === pickup &&
+          snapshot?.destination === destination &&
+          snapshot?.pickupLat === pickupPoint.lat &&
+          snapshot?.pickupLng === pickupPoint.lng &&
+          snapshot?.destinationLat === destinationPoint.lat &&
+          snapshot?.destinationLng === destinationPoint.lng &&
+          snapshot?.rideType === rideType &&
+          snapshot?.payment === payment;
+
+        if(!quoteMatches){
+          setFareQuote(null);
+          throw new Error('Your trip details changed. Please get an updated fare quote.');
+        }
+
+        ({data,error:rpcError}=await supabase.rpc(
+          'request_ride_with_quote',
+          {
+            p_quote_id:fareQuote.quote_id,
+            p_scheduled_at:null
+          }
+        ));
+      }else{
+        ({data,error:rpcError}=await supabase.rpc('request_ride',{
+          p_pickup_address:pickup,
+          p_destination_address:destination,
+          p_pickup_lat:pickupPoint.lat,
+          p_pickup_lng:pickupPoint.lng,
+          p_destination_lat:destinationPoint.lat,
+          p_destination_lng:destinationPoint.lng,
+          p_ride_type:rideType,
+          p_scheduled_at:null,
+          p_payment_method:payment
+        }));
+      }
+
+      if(rpcError){
+        if(DYNAMIC_PRICING_ENABLED &&
+          /expired|already been used|not found/i.test(rpcError.message || '')){
+          setFareQuote(null);
+          throw new Error('Your fare quote has expired or is no longer valid. Please return and request a fresh quote.');
+        }
+        throw rpcError;
+      }
+
+      setCurrentRide(data);
+      setFareQuote(null);
+      setTab('activity');
+      await refreshRides();
+      Alert.alert('Ride requested','Your request has been sent to eligible nearby drivers.');
+    }catch(e){
+      setError(e.message || 'Unable to request your ride.');
+    }finally{
+      setBusy(false);
+    }
+  };  const cancel=async(ride)=>{Alert.alert('Cancel ride','Are you sure you want to cancel this ride?',[{text:'Keep ride',style:'cancel'},{text:'Cancel ride',style:'destructive',onPress:async()=>{try{const{error:e}=await supabase.rpc('cancel_my_ride',{p_ride_id:ride.id,p_reason:'Cancelled by rider'});if(e)throw e;await refreshRides();}catch(err){setError(err.message);}}}]);};
   const signOut=async()=>{await supabase.auth.signOut();setProfile(null);};
 
   const mapRegion = useMemo(() => {
@@ -1100,11 +1230,11 @@ function AppContent() {
     )}
 
     <Pressable
-      onPress={() => goToBookingStep("confirm")}
+      onPress={prepareRideConfirmation}
       style={{ backgroundColor: "#2563EB", padding: 18, borderRadius: 15, alignItems: "center", marginTop: 20 }}
     >
       <Text style={{ color: "#FFFFFF", fontWeight: "900", fontSize: 15 }}>
-        Continue to confirmation →
+        {quoteLoading ? "Calculating fare..." : "Continue to confirmation →"}
       </Text>
     </Pressable>
   </ScrollView>
@@ -1463,7 +1593,7 @@ function AppContent() {
                 marginTop: 22
               }}>
                 <Text style={{ color: "#CBD5E1", fontSize: 12 }}>
-                  Estimated trip fare
+{DYNAMIC_PRICING_ENABLED && fareQuote ? "Your quoted fare" : "Estimated trip fare"}
                 </Text>
 
                 <Text style={{
@@ -1472,8 +1602,23 @@ function AppContent() {
                   fontWeight: "900",
                   marginTop: 5
                 }}>
-                  {formatMoney(estimatedFare)}
+                  {DYNAMIC_PRICING_ENABLED && fareQuote ? formatMoney(fareQuote.fare) : formatMoney(estimatedFare)}
                 </Text>
+
+                {DYNAMIC_PRICING_ENABLED && fareQuote?.pricing_reason ? (
+                  <Text style={{ color: "#BFDBFE", fontSize: 11, marginTop: 7 }}>
+                    {fareQuote.pricing_reason}
+                  </Text>
+                ) : null}
+
+                {DYNAMIC_PRICING_ENABLED && fareQuote?.expires_at ? (
+                  <Text style={{ color: "#BFDBFE", fontSize: 11, marginTop: 7 }}>
+                    Quote valid until {new Date(fareQuote.expires_at).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit"
+                    })}
+                  </Text>
+                ) : null}
 
                 <Text style={{ color: "#CBD5E1", fontSize: 11, marginTop: 6 }}>
                   {distance
@@ -1816,4 +1961,6 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
+
 

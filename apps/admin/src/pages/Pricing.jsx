@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, Save, SlidersHorizontal, Zap } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { ErrorNote, Notice, PageHeader, ghs } from '../components/ui';
@@ -56,6 +56,26 @@ export default function Pricing() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [updatedAt, setUpdatedAt] = useState('');
+  const [auditHistory, setAuditHistory] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(true);
+  const [auditError, setAuditError] = useState('');
+
+  const loadAuditHistory = useCallback(async () => {
+    setAuditLoading(true);
+    setAuditError('');
+
+    const { data, error: rpcError } = await supabase.rpc(
+      'admin_get_ride_pricing_audit'
+    );
+
+    if (rpcError) {
+      setAuditError(rpcError.message);
+    } else {
+      setAuditHistory(Array.isArray(data) ? data : []);
+    }
+
+    setAuditLoading(false);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,7 +104,8 @@ export default function Pricing() {
 
   useEffect(() => {
     load();
-  }, [load]);
+    loadAuditHistory();
+  }, [load, loadAuditHistory]);
 
   const changeField = (key, value) => {
     setSettings((current) => ({ ...current, [key]: value }));
@@ -121,9 +142,10 @@ export default function Pricing() {
     if (rpcError) {
       setError(rpcError.message);
     } else {
-      setNotice('Pricing settings saved successfully.');
       if (data?.updated_at) setUpdatedAt(data.updated_at);
       await load();
+      await loadAuditHistory();
+      setNotice('Pricing settings saved successfully.');
     }
 
     setSaving(false);
@@ -137,7 +159,7 @@ export default function Pricing() {
       >
         <button
           type="button"
-          onClick={load}
+          onClick={() => { load(); loadAuditHistory(); }}
           disabled={loading || saving}
           className="inline-flex items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
         >
@@ -243,6 +265,99 @@ export default function Pricing() {
           </div>
         </form>
       )}
+
+      <section className="mt-6 rounded-xl border border-line bg-white p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+          <div>
+            <h2 className="font-bold text-lg">Pricing Change History</h2>
+            <p className="text-sm text-muted mt-1">
+              The latest 20 recorded changes to ride pricing.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={loadAuditHistory}
+            disabled={auditLoading}
+            className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            <RefreshCw size={15} />
+            Refresh history
+          </button>
+        </div>
+
+        {auditLoading ? (
+          <p className="py-6 text-center text-sm text-muted">
+            Loading pricing history...
+          </p>
+        ) : auditError ? (
+          <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+            Could not load pricing history: {auditError}
+          </div>
+        ) : auditHistory.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted">
+            No pricing changes have been recorded yet.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {auditHistory.map((entry) => {
+              const before = entry.before_settings || {};
+              const after = entry.after_settings || {};
+              const changedKeys = Object.keys(after).filter(
+                (key) => key !== 'updated_at' &&
+                  key !== 'updated_by' &&
+                  JSON.stringify(before[key]) !== JSON.stringify(after[key])
+              );
+
+              return (
+                <details
+                  key={entry.id}
+                  className="rounded-lg border border-line p-4"
+                >
+                  <summary className="cursor-pointer list-none">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-sm">
+                          {entry.admin_name || 'Administrator'}
+                        </p>
+                        <p className="text-xs text-muted mt-1">
+                          {new Date(entry.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <span className="text-xs font-semibold text-brand">
+                        {changedKeys.length} setting{changedKeys.length === 1 ? '' : 's'} changed
+                      </span>
+                    </div>
+                  </summary>
+
+                  <div className="mt-4 border-t border-line pt-3 space-y-3">
+                    {changedKeys.length === 0 ? (
+                      <p className="text-sm text-muted">
+                        No pricing values changed.
+                      </p>
+                    ) : changedKeys.map((key) => (
+                      <div
+                        key={key}
+                        className="grid sm:grid-cols-3 gap-2 text-sm"
+                      >
+                        <span className="font-semibold">
+                          {key.replace(/_/g, ' ')}
+                        </span>
+                        <span className="text-muted">
+                          Before: {String(before[key])}
+                        </span>
+                        <span className="font-medium text-brand">
+                          After: {String(after[key])}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </>
   );
 }
+
